@@ -1,6 +1,9 @@
 export interface SesionUsuario {
+<<<<<<< HEAD
   personaId?: number;
   token?: string;
+=======
+>>>>>>> a059a9c9524eec81270e8200656f288f8cc7ce96
   role?: string;
   email?: string;
   nombre?: string;
@@ -17,7 +20,10 @@ export interface SesionUsuario {
 }
 
 export type RolMangaFlow = 'admin' | 'staff' | 'user' | 'guest';
+<<<<<<< HEAD
 export type RolBackendJava = 'ADMINISTRADOR' | 'OPERADOR' | 'CLIENTE';
+=======
+>>>>>>> a059a9c9524eec81270e8200656f288f8cc7ce96
 
 export interface CompraSesion {
   id: string;
@@ -65,6 +71,7 @@ export const rolPorCorreo = (correo: string): RolMangaFlow => {
   return 'user';
 };
 
+<<<<<<< HEAD
 export const rolFrontendABackend = (rol: RolMangaFlow): RolBackendJava => {
   if (rol === 'admin') return 'ADMINISTRADOR';
   if (rol === 'staff') return 'OPERADOR';
@@ -77,6 +84,8 @@ export const rolBackendAFrontend = (rol?: string): RolMangaFlow => {
   return 'user';
 };
 
+=======
+>>>>>>> a059a9c9524eec81270e8200656f288f8cc7ce96
 export const cargarPerfilUsuario = (correo: string): SesionUsuario | null => {
   const guardado = localStorage.getItem(clavePerfilUsuario(correo));
   if (!guardado) return null;
@@ -86,6 +95,10 @@ export const cargarPerfilUsuario = (correo: string): SesionUsuario | null => {
     if (typeof perfil === 'object' && perfil !== null && !Array.isArray(perfil)) {
       return perfil as SesionUsuario;
     }
+<<<<<<< HEAD
+=======
+    console.error(`El perfil guardado para "${correo}" no tiene el formato esperado.`);
+>>>>>>> a059a9c9524eec81270e8200656f288f8cc7ce96
   } catch (error) {
     console.error(`No se pudo leer el perfil guardado para "${correo}".`, error);
   }
@@ -107,6 +120,10 @@ export const cargarSesion = (): SesionUsuario | null => {
         }
         return usuario;
       }
+<<<<<<< HEAD
+=======
+      console.error(`Los datos guardados en "${clave}" no tienen el formato de sesión esperado.`);
+>>>>>>> a059a9c9524eec81270e8200656f288f8cc7ce96
     } catch (error) {
       console.error(`No se pudieron leer los datos de sesión guardados en "${clave}".`, error);
     }
@@ -132,6 +149,7 @@ export const puntosDeSesion = (sesion: SesionUsuario | null) => {
   return typeof puntos === 'number' && Number.isFinite(puntos) ? Math.max(0, puntos) : 0;
 };
 
+<<<<<<< HEAD
 export const esAdminSesion = (sesion: SesionUsuario | null) => {
   if (!sesion || sesion.isGuest || !sesion.token) return false;
   return sesion.role === 'admin' || Boolean(sesion.email && rolPorCorreo(sesion.email) === 'admin');
@@ -141,3 +159,12 @@ export const esTrabajadorSesion = (sesion: SesionUsuario | null) => {
   if (!sesion || sesion.isGuest || !sesion.token) return false;
   return sesion.role === 'staff' || Boolean(sesion.email && rolPorCorreo(sesion.email) === 'staff');
 };
+=======
+export const esAdminSesion = (sesion: SesionUsuario | null) => (
+  Boolean(sesion?.email && rolPorCorreo(sesion.email) === 'admin' && !sesion.isGuest)
+);
+
+export const esTrabajadorSesion = (sesion: SesionUsuario | null) => (
+  Boolean(sesion?.email && rolPorCorreo(sesion.email) === 'staff' && !sesion.isGuest)
+);
+>>>>>>> a059a9c9524eec81270e8200656f288f8cc7ce96

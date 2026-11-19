@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
+<<<<<<< HEAD
 import {
   cargarPerfilUsuario,
   rolBackendAFrontend,
@@ -8,6 +9,9 @@ import {
   type SesionUsuario,
 } from '../data/sesion';
 import { apiFetch } from '../services/apiClient';
+=======
+import { cargarPerfilUsuario, rolPorCorreo, type SesionUsuario } from '../data/sesion';
+>>>>>>> a059a9c9524eec81270e8200656f288f8cc7ce96
 
 interface LoginProps {
   sesion: SesionUsuario | null;
@@ -16,6 +20,7 @@ interface LoginProps {
   alCerrarSesion: () => void;
 }
 
+<<<<<<< HEAD
 interface LoginBackendResponse {
   personaId: number;
   correo: string;
@@ -33,6 +38,9 @@ interface PersonaBackendResponse {
 }
 
 const dominiosPermitidos = ['@duoc.cl', '@profesor.duoc.cl', '@gmail.com', '@mangaflow.cl', '@mangaflow.com'];
+=======
+const dominiosPermitidos = ['@duoc.cl', '@profesor.duoc.cl', '@gmail.com'];
+>>>>>>> a059a9c9524eec81270e8200656f288f8cc7ce96
 const correoConFormatoValido = (correo: string) => (
   correo.length <= 100 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correo)
 );
@@ -54,7 +62,11 @@ const obtenerAyudaCorreo = (correo: string, esRegistro: boolean) => {
   if (dominio.endsWith('.')) return 'Después del punto falta la terminación del dominio, por ejemplo com o cl.';
   if (!correoConFormatoValido(valor)) return 'Revisa el correo: debe tener un formato como nombre@gmail.com.';
   if (esRegistro && !correoUsuarioPermitido(valor)) {
+<<<<<<< HEAD
     return 'Ese dominio no está habilitado para el registro.';
+=======
+    return 'Ese dominio no está habilitado para el registro de cuentas personales.';
+>>>>>>> a059a9c9524eec81270e8200656f288f8cc7ce96
   }
   return 'El formato del correo se ve correcto.';
 };
@@ -68,9 +80,27 @@ const obtenerPuntosIniciales = (correo: string) => {
   if (puntosGuardados !== null) {
     const puntos = Number(puntosGuardados);
     if (Number.isFinite(puntos) && puntos >= 0) return puntos;
+<<<<<<< HEAD
   }
 
   const puntos = Math.floor(500 + Math.random() * 4501);
+=======
+    console.error(`El saldo guardado para "${correo}" no es válido.`);
+  }
+
+  const puntosUsados = new Set<number>();
+  for (let indice = 0; indice < localStorage.length; indice += 1) {
+    const otraClave = localStorage.key(indice);
+    if (!otraClave?.startsWith('mangaFlow_puntos_') || otraClave === clave) continue;
+    const puntos = Number(localStorage.getItem(otraClave));
+    if (Number.isInteger(puntos) && puntos >= 500 && puntos <= 5000) puntosUsados.add(puntos);
+  }
+
+  let puntos = Math.floor(500 + Math.random() * 4501);
+  while (puntosUsados.has(puntos)) {
+    puntos = puntos === 5000 ? 500 : puntos + 1;
+  }
+>>>>>>> a059a9c9524eec81270e8200656f288f8cc7ce96
   localStorage.setItem(clave, String(puntos));
   return puntos;
 };
@@ -82,6 +112,7 @@ export const Login = ({ sesion, alIniciarSesion, alIngresarInvitado, alCerrarSes
   const [contrasena, setContrasena] = useState('');
   const [confirmacionContrasena, setConfirmacionContrasena] = useState('');
   const [error, setError] = useState('');
+<<<<<<< HEAD
   const [cargando, setCargando] = useState(false);
   const location = useLocation();
   const navigate = useNavigate();
@@ -90,14 +121,36 @@ export const Login = ({ sesion, alIniciarSesion, alIngresarInvitado, alCerrarSes
   const ayudaCorreo = obtenerAyudaCorreo(correo, modo === 'registro');
 
   const iniciarSesion = async (event: FormEvent<HTMLFormElement>) => {
+=======
+  const location = useLocation();
+  const navigate = useNavigate();
+  const destino = (location.state as { desde?: string } | null)?.desde;
+  const usuarioAutenticado = Boolean(sesion && !sesion.isGuest);
+  const ayudaCorreo = obtenerAyudaCorreo(correo, modo === 'registro');
+
+  const iniciarSesion = (event: FormEvent<HTMLFormElement>) => {
+>>>>>>> a059a9c9524eec81270e8200656f288f8cc7ce96
     event.preventDefault();
     setError('');
 
     const email = correo.trim();
     const password = contrasena.trim();
+<<<<<<< HEAD
 
     if (!correoConFormatoValido(email)) {
       setError('Ingresa un correo electrónico válido.');
+=======
+    const rol = rolPorCorreo(email);
+    const correoValido = correoConFormatoValido(email)
+      && (
+        dominiosPermitidos.some(dominio => email.toLocaleLowerCase('es').endsWith(dominio))
+        || rol === 'admin'
+        || rol === 'staff'
+      );
+
+    if (!correoValido) {
+      setError('Correo o tipo de cuenta no válido. Usa una dirección permitida o solicita acceso a tu administrador.');
+>>>>>>> a059a9c9524eec81270e8200656f288f8cc7ce96
       return;
     }
     if (!contrasenaValida(password)) {
@@ -105,6 +158,7 @@ export const Login = ({ sesion, alIniciarSesion, alIngresarInvitado, alCerrarSes
       return;
     }
 
+<<<<<<< HEAD
     setCargando(true);
     try {
       const respuestaAuth = await apiFetch<LoginBackendResponse>('/mangas/auth/login', {
@@ -137,12 +191,25 @@ export const Login = ({ sesion, alIniciarSesion, alIngresarInvitado, alCerrarSes
         email: respuestaAuth.correo,
         nombre: nombreBackend,
         registradoEn: perfil?.registradoEn ?? new Date().toISOString(),
+=======
+    try {
+      const nombre = email.split('@')[0];
+      const perfil = cargarPerfilUsuario(email);
+      const puntos = perfil?.puntos ?? perfil?.points ?? obtenerPuntosIniciales(email);
+      alIniciarSesion({
+        ...perfil,
+        role: rol,
+        email,
+        nombre: perfil?.nombre || (nombre.charAt(0).toLocaleUpperCase('es') + nombre.slice(1)),
+        registradoEn: perfil?.registradoEn ?? (!perfil ? new Date().toISOString() : undefined),
+>>>>>>> a059a9c9524eec81270e8200656f288f8cc7ce96
         points: puntos,
         puntos,
         isGuest: false,
         wishlist: perfil?.wishlist ?? [],
         compras: perfil?.compras ?? [],
       });
+<<<<<<< HEAD
 
       navigate(destino || (rolFrontend === 'admin' || rolFrontend === 'staff' ? '/admin' : '/inicio'), { replace: true });
     } catch (cause) {
@@ -153,6 +220,16 @@ export const Login = ({ sesion, alIniciarSesion, alIngresarInvitado, alCerrarSes
   };
 
   const registrarUsuario = async (event: FormEvent<HTMLFormElement>) => {
+=======
+      navigate(destino || (rol === 'admin' || rol === 'staff' ? '/admin' : '/inicio'), { replace: true });
+    } catch (cause) {
+      console.error('No se pudo iniciar la sesión en el almacenamiento local.', cause);
+      setError('No se pudo iniciar sesión. Revisa el almacenamiento del navegador e inténtalo nuevamente.');
+    }
+  };
+
+  const registrarUsuario = (event: FormEvent<HTMLFormElement>) => {
+>>>>>>> a059a9c9524eec81270e8200656f288f8cc7ce96
     event.preventDefault();
     setError('');
 
@@ -165,7 +242,11 @@ export const Login = ({ sesion, alIniciarSesion, alIngresarInvitado, alCerrarSes
       return;
     }
     if (!correoUsuarioPermitido(email)) {
+<<<<<<< HEAD
       setError('Usa un correo válido @duoc.cl, @profesor.duoc.cl, @gmail.com o @mangaflow.cl.');
+=======
+      setError('Para crear una cuenta usa un correo válido @duoc.cl, @profesor.duoc.cl o @gmail.com.');
+>>>>>>> a059a9c9524eec81270e8200656f288f8cc7ce96
       return;
     }
     if (!contrasenaValida(password)) {
@@ -176,6 +257,7 @@ export const Login = ({ sesion, alIniciarSesion, alIngresarInvitado, alCerrarSes
       setError('Las contraseñas no coinciden.');
       return;
     }
+<<<<<<< HEAD
 
     setCargando(true);
     try {
@@ -216,6 +298,17 @@ export const Login = ({ sesion, alIniciarSesion, alIngresarInvitado, alCerrarSes
         personaId: personaCreada.id,
         token: respuestaAuth.token,
         role: rolFrontend,
+=======
+    if (cargarPerfilUsuario(email)) {
+      setError('Ya existe una cuenta con ese correo. Inicia sesión en su lugar.');
+      return;
+    }
+
+    try {
+      const puntos = obtenerPuntosIniciales(email);
+      alIniciarSesion({
+        role: 'user',
+>>>>>>> a059a9c9524eec81270e8200656f288f8cc7ce96
         email,
         nombre,
         registradoEn: new Date().toISOString(),
@@ -226,12 +319,19 @@ export const Login = ({ sesion, alIniciarSesion, alIngresarInvitado, alCerrarSes
         compras: [],
         biblioteca: [],
       });
+<<<<<<< HEAD
 
       navigate(rolFrontend === 'admin' || rolFrontend === 'staff' ? '/admin' : '/inicio', { replace: true });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'No se pudo crear la cuenta en el servidor.');
     } finally {
       setCargando(false);
+=======
+      navigate('/inicio', { replace: true });
+    } catch (cause) {
+      console.error('No se pudo guardar el nuevo perfil en el almacenamiento local.', cause);
+      setError('No se pudo crear la cuenta. Revisa el almacenamiento del navegador e inténtalo nuevamente.');
+>>>>>>> a059a9c9524eec81270e8200656f288f8cc7ce96
     }
   };
 
@@ -307,8 +407,13 @@ export const Login = ({ sesion, alIniciarSesion, alIngresarInvitado, alCerrarSes
                 />
                 <div id={modo === 'registro' ? 'register-email-hint' : 'login-email-hint'} className="form-text text-secondary login-hint">
                   {modo === 'registro'
+<<<<<<< HEAD
                     ? 'Permitidos: @duoc.cl, @profesor.duoc.cl, @gmail.com (o @mangaflow.cl para admin)'
                     : 'Ingresa tu correo registrado'}
+=======
+                    ? 'Cuentas personales: @duoc.cl, @profesor.duoc.cl o @gmail.com'
+                    : 'Permitidos: @duoc.cl, @profesor.duoc.cl, @gmail.com'}
+>>>>>>> a059a9c9524eec81270e8200656f288f8cc7ce96
                 </div>
                 {ayudaCorreo && (
                   <div
@@ -359,9 +464,15 @@ export const Login = ({ sesion, alIniciarSesion, alIngresarInvitado, alCerrarSes
                 </div>
               )}
 
+<<<<<<< HEAD
               <button className="btn-magenta w-100" type="submit" disabled={cargando}>
                 <i className={`fa-solid ${modo === 'registro' ? 'fa-user-plus' : 'fa-right-to-bracket'} me-2`} aria-hidden="true" />
                 {cargando ? 'Conectando...' : modo === 'registro' ? 'Crear cuenta' : 'Iniciar sesión'}
+=======
+              <button className="btn-magenta w-100" type="submit">
+                <i className={`fa-solid ${modo === 'registro' ? 'fa-user-plus' : 'fa-right-to-bracket'} me-2`} aria-hidden="true" />
+                {modo === 'registro' ? 'Crear cuenta' : 'Iniciar sesión'}
+>>>>>>> a059a9c9524eec81270e8200656f288f8cc7ce96
               </button>
             </form>
 
@@ -394,9 +505,19 @@ export const Login = ({ sesion, alIniciarSesion, alIngresarInvitado, alCerrarSes
                 </div>
               </>
             )}
+<<<<<<< HEAD
+=======
+            <div className="login-demo-note mt-3 small text-center">
+              Demo local: las cuentas se guardan en este navegador; no se almacena ni verifica la contraseña en un servidor.
+            </div>
+>>>>>>> a059a9c9524eec81270e8200656f288f8cc7ce96
           </>
         )}
       </section>
     </main>
   );
+<<<<<<< HEAD
 };
+=======
+};
+>>>>>>> a059a9c9524eec81270e8200656f288f8cc7ce96
