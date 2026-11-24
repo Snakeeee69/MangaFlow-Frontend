@@ -7,11 +7,6 @@ import {
   type MetricasAdmin,
 } from '../data/metricasAdmin';
 import {
-  cargarPedidosAdmin,
-  suscribirPedidosAdmin,
-  type PedidoAdmin,
-} from '../data/pedidosAdmin';
-import {
   demografiasCatalogo,
   esMangaActivo,
   generosCatalogo,
@@ -25,6 +20,16 @@ import {
   crearMangaApi,
   eliminarMangaApi,
 } from '../services/catalogoService';
+import {
+  obtenerInventariosApi,
+  sincronizarStockMangaApi,
+} from '../services/inventarioService';
+import {
+  cancelarPedidoApi,
+  confirmarPedidoApi,
+  obtenerTodosPedidosApi,
+  type PedidoBackendResponse,
+} from '../services/pedidosService';
 
 interface AdminProps {
   mangas: MangaCatalogo[];
@@ -57,6 +62,12 @@ const formularioInicial: FormularioManga = {
 };
 
 const formatearCLP = (valor: number) => `$${Math.round(valor).toLocaleString('es-CL')}`;
+
+const badgeEstadoPedido = (estado: PedidoBackendResponse['estado']) => {
+  if (estado === 'CONFIRMADO') return 'bg-success';
+  if (estado === 'CANCELADO') return 'bg-danger';
+  return 'bg-warning text-dark';
+};
 
 const GraficoVentas = ({ dias }: { dias: DiaMetricas[] }) => {
   const valorMaximo = Math.max(1, ...dias.map(dia => dia.ventas));
@@ -143,10 +154,43 @@ export const Admin = ({ mangas, alGuardarCatalogo, rol }: AdminProps) => {
   const [mensaje, setMensaje] = useState('');
   const [error, setError] = useState('');
   const [metricas, setMetricas] = useState<MetricasAdmin>(cargarMetricasAdmin);
-  const [pedidos, setPedidos] = useState<PedidoAdmin[]>(cargarPedidosAdmin);
+  const [pedidosBackend, setPedidosBackend] = useState<PedidoBackendResponse[]>([]);
+  const [stockPorManga, setStockPorManga] = useState<Record<number, number>>({});
+  const [stockMinimoPorManga, setStockMinimoPorManga] = useState<Record<number, number>>({});
 
   useEffect(() => suscribirMetricasAdmin(() => setMetricas(cargarMetricasAdmin())), []);
-  useEffect(() => suscribirPedidosAdmin(() => setPedidos(cargarPedidosAdmin())), []);
+
+  useEffect(() => {
+    let cancelado = false;
+
+    obtenerInventariosApi()
+      .then(lista => {
+        if (cancelado) return;
+        const mapaStock: Record<number, number> = {};
+        const mapaMinimo: Record<number, number> = {};
+        lista.forEach(inv => {
+          mapaStock[inv.mangaId] = inv.stock;
+          mapaMinimo[inv.mangaId] = inv.stockMinimo;
+        });
+        setStockPorManga(mapaStock);
+        setStockMinimoPorManga(mapaMinimo);
+      })
+      .catch(err => console.warn('No se pudo cargar inventario-service:', err));
+
+    obtenerTodosPedidosApi()
+      .then(lista => {
+        if (!cancelado) {
+          setPedidosBackend(
+            [...lista].sort((a, b) => Date.parse(b.fechaCreacion) - Date.parse(a.fechaCreacion)),
+          );
+        }
+      })
+      .catch(err => console.warn('No se pudieron cargar pedidos desde pedidos-service:', err));
+
+    return () => {
+      cancelado = true;
+    };
+  }, []);
 
   const mangasFiltrados = useMemo(() => mangas.filter(manga => {
     const texto = `${manga.titulo} ${manga.autor ?? ''}`.toLocaleLowerCase('es');
@@ -156,6 +200,13 @@ export const Admin = ({ mangas, alGuardarCatalogo, rol }: AdminProps) => {
 
   const visibles = mangas.filter(esMangaActivo).length;
   const archivados = mangas.length - visibles;
+
+  const totalComprasDashboard = pedidosBackend.length > 0 ? pedidosBackend.length : metricas.compras;
+  const totalVentasDashboard = pedidosBackend.length > 0
+    ? pedidosBackend
+      .filter(p => p.estado !== 'CANCELADO')
+      .reduce((acc, p) => acc + p.total, 0)
+    : metricas.ventas;
 
   const actualizarCampo = <K extends keyof FormularioManga>(campo: K, valor: FormularioManga[K]) => {
     setFormulario(actual => ({ ...actual, [campo]: valor }));
@@ -191,10 +242,14 @@ export const Admin = ({ mangas, alGuardarCatalogo, rol }: AdminProps) => {
         stock,
       });
 
-      alGuardarCatalogo([...mangas, creado]);
+      const invCreado = await sincronizarStockMangaApi(creado.id, stock);
+      setStockPorManga(prev => ({ ...prev, [creado.id]: invCreado.stock }));
+      setStockMinimoPorManga(prev => ({ ...prev, [creado.id]: invCreado.stockMinimo }));
+
+      alGuardarCatalogo([...mangas, { ...creado, stock: invCreado.stock }]);
       setFormulario(formularioInicial);
       setMostrarFormulario(false);
-      setMensaje(`${creado.titulo} se guardó en MySQL y apareció en el catálogo.`);
+      setMensaje(`${creado.titulo} se guardó en MySQL con ${invCreado.stock} unidades en inventario.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'No se pudo guardar el manga en el servidor.');
     }
@@ -216,16 +271,24 @@ export const Admin = ({ mangas, alGuardarCatalogo, rol }: AdminProps) => {
     if (!esMangaActivo(manga)) return;
     const stock = Number(valor);
     if (!Number.isInteger(stock) || stock < 0) return;
+    setStockPorManga(prev => ({ ...prev, [manga.id]: stock }));
     alGuardarCatalogo(mangas.map(item => item.id === manga.id ? { ...item, stock } : item));
   };
 
   const guardarStockEnServidor = async (manga: MangaCatalogo) => {
     if (!esMangaActivo(manga)) return;
+    const stockObjetivo = stockPorManga[manga.id] ?? manga.stock ?? 0;
     try {
-      const actualizado = await actualizarMangaApi(manga);
+      const invActualizado = await sincronizarStockMangaApi(manga.id, stockObjetivo);
+      setStockPorManga(prev => ({ ...prev, [manga.id]: invActualizado.stock }));
+      const actualizado = await actualizarMangaApi({ ...manga, stock: invActualizado.stock }).catch(() => ({
+        ...manga,
+        stock: invActualizado.stock,
+      }));
       alGuardarCatalogo(mangas.map(item => item.id === manga.id ? actualizado : item));
+      setMensaje(`Stock de "${manga.titulo}" actualizado a ${invActualizado.stock} unidades en MySQL.`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'No se pudo actualizar el stock.');
+      setError(err instanceof Error ? err.message : 'No se pudo actualizar el stock en inventario.');
     }
   };
 
@@ -238,6 +301,19 @@ export const Admin = ({ mangas, alGuardarCatalogo, rol }: AdminProps) => {
       setMensaje(`${manga.titulo} se eliminó definitivamente de MySQL.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'No se pudo eliminar el manga.');
+    }
+  };
+
+  const cambiarEstadoPedido = async (pedidoId: number, accion: 'confirmar' | 'cancelar') => {
+    setError('');
+    try {
+      const actualizado = accion === 'confirmar'
+        ? await confirmarPedidoApi(pedidoId)
+        : await cancelarPedidoApi(pedidoId);
+      setPedidosBackend(prev => prev.map(p => p.id === pedidoId ? actualizado : p));
+      setMensaje(`Pedido MF-${String(pedidoId).padStart(5, '0')} marcado como ${actualizado.estado}.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'No se pudo actualizar el estado del pedido.');
     }
   };
 
@@ -254,8 +330,8 @@ export const Admin = ({ mangas, alGuardarCatalogo, rol }: AdminProps) => {
           </h1>
           <p className="text-secondary mb-0">
             {esAdministrador
-              ? 'Gestiona el catálogo, los pedidos y la actividad de MangaFlow.'
-              : 'Agrega mangas, actualiza stock, archiva títulos y revisa pedidos.'}
+              ? 'Gestiona el catálogo, el inventario en MySQL y los pedidos de MangaFlow.'
+              : 'Agrega mangas, actualiza stock en inventario, archiva títulos y gestiona pedidos.'}
           </p>
         </div>
         <span className={`admin-role-badge ${esAdministrador ? '' : 'staff'}`}>
@@ -266,13 +342,13 @@ export const Admin = ({ mangas, alGuardarCatalogo, rol }: AdminProps) => {
 
       {mensaje && (
         <div className="alert alert-success d-flex justify-content-between align-items-center" role="status">
-          {mensaje}
+          <span>{mensaje}</span>
           <button type="button" className="btn-close btn-close-white" aria-label="Cerrar aviso" onClick={() => setMensaje('')} />
         </div>
       )}
       {error && (
         <div className="alert alert-danger d-flex justify-content-between align-items-center" role="alert">
-          {error}
+          <span>{error}</span>
           <button type="button" className="btn-close btn-close-white" aria-label="Cerrar aviso" onClick={() => setError('')} />
         </div>
       )}
@@ -304,8 +380,8 @@ export const Admin = ({ mangas, alGuardarCatalogo, rol }: AdminProps) => {
             {[
               { etiqueta: 'Visitas (7 días)', valor: metricas.dias.reduce((total, dia) => total + dia.visitas, 0), icono: 'fa-eye' },
               { etiqueta: 'Registros', valor: metricas.registros, icono: 'fa-user-plus' },
-              { etiqueta: 'Compras', valor: metricas.compras, icono: 'fa-bag-shopping' },
-              { etiqueta: 'Ventas acumuladas', valor: formatearCLP(metricas.ventas), icono: 'fa-chart-line' },
+              { etiqueta: 'Pedidos', valor: totalComprasDashboard, icono: 'fa-bag-shopping' },
+              { etiqueta: 'Ventas acumuladas', valor: formatearCLP(totalVentasDashboard), icono: 'fa-chart-line' },
               { etiqueta: 'Puntos utilizados', valor: metricas.puntosUsados.toLocaleString('es-CL'), icono: 'fa-star' },
             ].map(dato => (
               <div className="col-6 col-md-4 col-xl" key={dato.etiqueta}>
@@ -329,42 +405,67 @@ export const Admin = ({ mangas, alGuardarCatalogo, rol }: AdminProps) => {
       <section className="admin-catalog-panel p-3 p-md-4 rounded-4 mb-4" aria-labelledby="admin-orders-title">
         <div className="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
           <div>
-            <h2 id="admin-orders-title" className="text-white fw-bold fs-5 mb-1">Pedidos</h2>
-            <p className="text-secondary small mb-0">Compras registradas por los usuarios en este navegador.</p>
+            <h2 id="admin-orders-title" className="text-white fw-bold fs-5 mb-1">Pedidos (MySQL)</h2>
+            <p className="text-secondary small mb-0">Órdenes registradas en pedidos-service.</p>
           </div>
-          <span className="admin-role-badge">{pedidos.length} {pedidos.length === 1 ? 'pedido' : 'pedidos'}</span>
+          <span className="admin-role-badge">
+            {pedidosBackend.length} {pedidosBackend.length === 1 ? 'pedido' : 'pedidos'}
+          </span>
         </div>
-        {pedidos.length === 0 ? (
-          <p className="text-secondary text-center py-4 mb-0">Todavía no hay pedidos registrados.</p>
+
+        {pedidosBackend.length === 0 ? (
+          <p className="text-secondary text-center py-4 mb-0">Todavía no hay pedidos registrados en la base de datos.</p>
         ) : (
           <div className="d-flex flex-column gap-2">
-            {pedidos.map(({ cliente, nombreCliente, compra }) => (
-              <details className="admin-order-card p-3 rounded-3" key={`${cliente}-${compra.folio}`}>
-                <summary className="admin-order-summary">
-                  <span className="min-w-0">
-                    <strong className="text-white d-block">{compra.folio}</strong>
-                    <span className="text-secondary small">{nombreCliente} · {cliente}</span>
-                  </span>
-                  <span className="text-secondary small text-nowrap">
-                    {new Date(compra.fecha).toLocaleDateString('es-CL')}
-                  </span>
-                  <strong className="text-white text-nowrap">{formatearCLP(compra.total)}</strong>
-                </summary>
-                <div className="admin-order-details mt-3 pt-3">
-                  <p className="text-secondary small mb-2">
-                    Entrega: <span className="text-white">{compra.direccionEntrega || compra.tipoEntrega || 'No indicada'}</span>
-                  </p>
-                  <ul className="list-unstyled mb-0 d-flex flex-column gap-1">
-                    {compra.items.map((item, indice) => (
-                      <li className="d-flex justify-content-between gap-3 text-secondary small" key={`${item.id}-${indice}`}>
-                        <span>{item.titulo} · {item.formato} × {item.quantity}</span>
-                        <span className="text-white text-nowrap">{formatearCLP(item.precio * item.quantity)}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              </details>
-            ))}
+            {pedidosBackend.map(pedido => {
+              const folio = `MF-${String(pedido.id).padStart(5, '0')}`;
+              const manga = mangas.find(m => m.id === pedido.mangaId);
+
+              return (
+                <details className="admin-order-card p-3 rounded-3" key={pedido.id}>
+                  <summary className="admin-order-summary">
+                    <span className="min-w-0">
+                      <strong className="text-white d-inline-block me-2">{folio}</strong>
+                      <span className={`badge ${badgeEstadoPedido(pedido.estado)}`}>{pedido.estado}</span>
+                      <span className="text-secondary small d-block">
+                        Cliente ID #{pedido.personaId} · {manga?.titulo ?? `Manga #${pedido.mangaId}`} (×{pedido.cantidad})
+                      </span>
+                    </span>
+                    <span className="text-secondary small text-nowrap">
+                      {new Date(pedido.fechaCreacion).toLocaleDateString('es-CL')}
+                    </span>
+                    <strong className="text-white text-nowrap">{formatearCLP(pedido.total)}</strong>
+                  </summary>
+                  <div className="admin-order-details mt-3 pt-3 d-flex flex-wrap justify-content-between align-items-center gap-3">
+                    <div className="text-secondary small">
+                      <span>Precio unitario: <strong className="text-white">{formatearCLP(pedido.precioUnitario)}</strong></span>
+                      <span className="mx-2">·</span>
+                      <span>Cantidad: <strong className="text-white">{pedido.cantidad}</strong></span>
+                    </div>
+                    {pedido.estado === 'PENDIENTE' && (
+                      <div className="d-flex gap-2">
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-outline-success"
+                          onClick={() => cambiarEstadoPedido(pedido.id, 'confirmar')}
+                        >
+                          <i className="fa-solid fa-check me-1" aria-hidden="true" />
+                          Confirmar
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-outline-danger"
+                          onClick={() => cambiarEstadoPedido(pedido.id, 'cancelar')}
+                        >
+                          <i className="fa-solid fa-xmark me-1" aria-hidden="true" />
+                          Cancelar
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </details>
+              );
+            })}
           </div>
         )}
       </section>
@@ -372,8 +473,8 @@ export const Admin = ({ mangas, alGuardarCatalogo, rol }: AdminProps) => {
       <section className="admin-catalog-panel p-3 p-md-4 rounded-4">
         <div className="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-3">
           <div>
-            <h2 className="text-white fw-bold fs-5 mb-1">Catálogo de mangas</h2>
-            <p className="text-secondary small mb-0">Agrega títulos, ajusta stock o archiva temporalmente.</p>
+            <h2 className="text-white fw-bold fs-5 mb-1">Catálogo e Inventario</h2>
+            <p className="text-secondary small mb-0">Agrega títulos, ajusta stock en MySQL o archiva temporalmente.</p>
           </div>
           <button
             className="btn-magenta"
@@ -406,7 +507,7 @@ export const Admin = ({ mangas, alGuardarCatalogo, rol }: AdminProps) => {
                 <input id="admin-precio" className="form-control admin-input" type="number" min="1" step="1" value={formulario.precio} onChange={event => actualizarCampo('precio', event.target.value)} required />
               </div>
               <div className="col-sm-6 col-md-3">
-                <label className="form-label text-secondary small" htmlFor="admin-stock">Stock *</label>
+                <label className="form-label text-secondary small" htmlFor="admin-stock">Stock inicial *</label>
                 <input id="admin-stock" className="form-control admin-input" type="number" min="0" step="1" value={formulario.stock} onChange={event => actualizarCampo('stock', event.target.value)} required />
               </div>
               <div className="col-sm-6 col-md-3">
@@ -436,7 +537,7 @@ export const Admin = ({ mangas, alGuardarCatalogo, rol }: AdminProps) => {
                 </div>
               </div>
               <div className="col-12 text-end">
-                <button className="btn-magenta" type="submit">Guardar en catálogo</button>
+                <button className="btn-magenta" type="submit">Guardar en catálogo e inventario</button>
               </div>
             </div>
           </form>
@@ -459,6 +560,10 @@ export const Admin = ({ mangas, alGuardarCatalogo, rol }: AdminProps) => {
         <div className="d-flex flex-column gap-2">
           {mangasFiltrados.map(manga => {
             const activo = esMangaActivo(manga);
+            const stockActual = stockPorManga[manga.id] ?? manga.stock ?? 0;
+            const stockMinimo = stockMinimoPorManga[manga.id] ?? 5;
+            const esStockBajo = stockActual <= stockMinimo;
+
             return (
               <article className={`admin-manga-row p-3 rounded-3 ${activo ? '' : 'is-archived'}`} key={manga.id}>
                 <img className="admin-manga-cover rounded-2" src={manga.imagen} alt="" onError={event => {
@@ -470,9 +575,10 @@ export const Admin = ({ mangas, alGuardarCatalogo, rol }: AdminProps) => {
                     <h3 className="text-white fw-semibold fs-6 mb-0 text-truncate">{manga.titulo}</h3>
                     <span className={`admin-status ${activo ? 'active' : 'archived'}`}>{activo ? 'Visible' : 'Archivado'}</span>
                     {manga.esDigitalOnly && <span className="badge bg-info text-dark">Digital</span>}
+                    {esStockBajo && <span className="badge bg-danger">Stock bajo ({stockActual})</span>}
                   </div>
                   <p className="text-secondary small mb-1">{manga.autor || 'Autor no especificado'} · {manga.demografia} · {manga.generos.join(', ')}</p>
-                  <p className="text-secondary small mb-0">${manga.precio.toLocaleString('es-CL')} · {manga.stock ?? 'Stock no indicado'}</p>
+                  <p className="text-secondary small mb-0">${manga.precio.toLocaleString('es-CL')} · Stock en almacén: {stockActual} unid.</p>
                 </div>
                 <div className="d-flex align-items-center gap-2 flex-shrink-0">
                   <label className="admin-stock-control">
@@ -481,7 +587,7 @@ export const Admin = ({ mangas, alGuardarCatalogo, rol }: AdminProps) => {
                       type="number"
                       min="0"
                       step="1"
-                      value={manga.stock ?? 0}
+                      value={stockActual}
                       onChange={event => actualizarStockLocal(manga, event.target.value)}
                       onBlur={() => guardarStockEnServidor(manga)}
                       disabled={!activo}

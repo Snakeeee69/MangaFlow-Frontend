@@ -1,4 +1,5 @@
 import { PRECIO_MANGA_DIGITAL, type MangaCatalogo } from '../data/catalogo';
+import { obtenerTokenGuardado } from './apiClient';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8090';
 const BASE_CATALOGO = `${API_URL}/mangas/catalogo`;
@@ -20,6 +21,14 @@ interface MangaBackend {
   stock?: number;
   proximamenteFisico?: boolean;
 }
+
+const headersCatalogo = (conJson = false): Record<string, string> => {
+  const headers: Record<string, string> = {};
+  if (conJson) headers['Content-Type'] = 'application/json';
+  const token = obtenerTokenGuardado();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  return headers;
+};
 
 const mapDesdeBackend = (item: MangaBackend): MangaCatalogo => {
   const esDigitalOnly = item.formato === 'DIGITAL';
@@ -62,6 +71,7 @@ const extraerError = async (respuesta: Response, respaldo: string): Promise<stri
     const data = await respuesta.json();
     if (Array.isArray(data.details) && data.details.length > 0) return data.details.join(' · ');
     if (typeof data.message === 'string' && data.message) return data.message;
+    if (typeof data.error === 'string' && data.error) return data.error;
   } catch {
     // Ignorar error de parseo
   }
@@ -78,7 +88,7 @@ export const obtenerCatalogoApi = async (): Promise<MangaCatalogo[]> => {
 export const crearMangaApi = async (manga: Omit<MangaCatalogo, 'id'>): Promise<MangaCatalogo> => {
   const respuesta = await fetch(BASE_CATALOGO, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: headersCatalogo(true),
     body: JSON.stringify(mapHaciaBackend(manga)),
   });
   if (!respuesta.ok) throw new Error(await extraerError(respuesta, 'Error al crear el manga'));
@@ -88,7 +98,7 @@ export const crearMangaApi = async (manga: Omit<MangaCatalogo, 'id'>): Promise<M
 export const actualizarMangaApi = async (manga: MangaCatalogo): Promise<MangaCatalogo> => {
   const respuesta = await fetch(`${BASE_CATALOGO}/${manga.id}`, {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
+    headers: headersCatalogo(true),
     body: JSON.stringify(mapHaciaBackend(manga)),
   });
   if (!respuesta.ok) throw new Error(await extraerError(respuesta, 'Error al actualizar el manga'));
@@ -97,12 +107,18 @@ export const actualizarMangaApi = async (manga: MangaCatalogo): Promise<MangaCat
 
 export const cambiarEstadoMangaApi = async (id: number, activar: boolean): Promise<MangaCatalogo> => {
   const accion = activar ? 'activar' : 'desactivar';
-  const respuesta = await fetch(`${BASE_CATALOGO}/${id}/${accion}`, { method: 'PUT' });
+  const respuesta = await fetch(`${BASE_CATALOGO}/${id}/${accion}`, {
+    method: 'PUT',
+    headers: headersCatalogo(false),
+  });
   if (!respuesta.ok) throw new Error(await extraerError(respuesta, 'Error al cambiar estado del manga'));
   return mapDesdeBackend(await respuesta.json());
 };
 
 export const eliminarMangaApi = async (id: number): Promise<void> => {
-  const respuesta = await fetch(`${BASE_CATALOGO}/${id}`, { method: 'DELETE' });
+  const respuesta = await fetch(`${BASE_CATALOGO}/${id}`, {
+    method: 'DELETE',
+    headers: headersCatalogo(false),
+  });
   if (!respuesta.ok) throw new Error(await extraerError(respuesta, 'Error al eliminar el manga'));
 };

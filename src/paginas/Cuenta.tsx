@@ -1,8 +1,13 @@
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { AccesoRequerido } from '../componentes/moleculas/AccesoRequerido';
 import { formatearCLP } from '../data/carrito';
 import { slugManga, type MangaCatalogo } from '../data/catalogo';
 import { puntosDeSesion, type SesionUsuario } from '../data/sesion';
+import {
+  obtenerPedidosPorPersonaApi,
+  type PedidoBackendResponse,
+} from '../services/pedidosService';
 
 interface CuentaProps {
   sesion: SesionUsuario | null;
@@ -10,7 +15,53 @@ interface CuentaProps {
   alActualizarSesion: (sesion: SesionUsuario) => void;
 }
 
+const obtenerPersonaIdDeSesion = (sesion: SesionUsuario | null): number | null => {
+  if (!sesion) return null;
+  const datos = sesion as unknown as Record<string, unknown>;
+  const candidato = datos.personaId ?? datos.usuarioId ?? datos.id;
+  if (typeof candidato === 'number' && Number.isFinite(candidato) && candidato > 0) return candidato;
+  if (typeof candidato === 'string' && /^\d+$/.test(candidato.trim())) return Number(candidato.trim());
+  return null;
+};
+
+const badgeEstadoPedido = (estado: PedidoBackendResponse['estado']) => {
+  if (estado === 'CONFIRMADO') return 'bg-success';
+  if (estado === 'CANCELADO') return 'bg-danger';
+  return 'bg-warning text-dark';
+};
+
 export const Cuenta = ({ sesion, mangas, alActualizarSesion }: CuentaProps) => {
+  const [pedidosBackend, setPedidosBackend] = useState<PedidoBackendResponse[]>([]);
+  const [cargandoPedidos, setCargandoPedidos] = useState(false);
+
+  const personaId = obtenerPersonaIdDeSesion(sesion);
+
+  useEffect(() => {
+    if (!personaId || !sesion || sesion.isGuest) return;
+    let cancelado = false;
+    setCargandoPedidos(true);
+
+    obtenerPedidosPorPersonaApi(personaId)
+      .then(lista => {
+        if (!cancelado) {
+          const ordenados = [...lista].sort(
+            (a, b) => Date.parse(b.fechaCreacion) - Date.parse(a.fechaCreacion),
+          );
+          setPedidosBackend(ordenados);
+        }
+      })
+      .catch(err => {
+        console.warn('No se pudieron cargar los pedidos desde pedidos-service:', err);
+      })
+      .finally(() => {
+        if (!cancelado) setCargandoPedidos(false);
+      });
+
+    return () => {
+      cancelado = true;
+    };
+  }, [personaId, sesion]);
+
   if (!sesion || sesion.isGuest) {
     return (
       <AccesoRequerido
@@ -20,7 +71,7 @@ export const Cuenta = ({ sesion, mangas, alActualizarSesion }: CuentaProps) => {
     );
   }
 
-  const compras = sesion.compras ?? [];
+  const comprasLocales = sesion.compras ?? [];
   const mangasDeseados = (sesion.wishlist ?? [])
     .map(id => mangas.find(manga => manga.id === id))
     .filter((manga): manga is MangaCatalogo => Boolean(manga));
@@ -31,6 +82,8 @@ export const Cuenta = ({ sesion, mangas, alActualizarSesion }: CuentaProps) => {
       wishlist: (sesion.wishlist ?? []).filter(mangaId => mangaId !== id),
     });
   };
+
+  const totalHistorial = pedidosBackend.length > 0 ? pedidosBackend.length : comprasLocales.length;
 
   return (
     <main className="container account-page py-4 py-lg-5">
@@ -117,11 +170,100 @@ export const Cuenta = ({ sesion, mangas, alActualizarSesion }: CuentaProps) => {
         <div className="d-flex align-items-center justify-content-between gap-3 mb-3">
           <div>
             <h2 className="text-white fw-bold fs-4 mb-1">Historial de compras</h2>
-            <p className="text-secondary small mb-0">Revisa tus pedidos registrados en esta demostración.</p>
+            <p className="text-secondary small mb-0">Pedidos registrados en tu cuenta MangaFlow.</p>
           </div>
-          <span className="account-count">{compras.length}</span>
+          <span className="account-count">{totalHistorial}</span>
         </div>
-        {compras.length === 0 ? (
+
+        {cargandoPedidos ? (
+          <div className="account-empty p-4 rounded-3 text-center">
+            <p className="text-secondary small mb-0">Cargando tus pedidos...</p>
+          </div>
+        ) : pedidosBackend.length > 0 ? (
+          <div className="d-flex flex-column gap-3">
+            {pedidosBackend.map(pedido => {
+              const folio = `MF-${String(pedido.id).padStart(5, '0')}`;
+              const manga = mangas.find(m => m.id === pedido.mangaId);
+              const boletaLocal = comprasLocales.find(c => c.folio === folio);
+
+              return (
+                <article className="account-order-card p-3 p-md-4 rounded-3" key={pedido.id}>
+                  <div className="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
+                    <div>
+                      <div className="d-flex align-items-center gap-2 mb-1">
+                        <h3 className="text-white fw-semibold fs-6 mb-0">Pedido {folio}</h3>
+                        <span className={`badge ${badgeEstadoPedido(pedido.estado)}`}>
+                          {pedido.estado}
+                        </span>
+                      </div>
+                      <span className="text-secondary small">
+                        {new Date(pedido.fechaCreacion).toLocaleDateString('es-CL')}
+                      </span>
+                    </div>
+                    <span className="account-order-total fw-bold">{formatearCLP(pedido.total)}</span>
+                  </div>
+
+                  <div className="d-flex flex-column gap-2">
+                    <div className="d-flex justify-content-between gap-3 text-secondary small">
+                      <span>
+                        {manga?.titulo ?? `Manga #${pedido.mangaId}`} × {pedido.cantidad}
+                      </span>
+                      <span className="text-white flex-shrink-0">
+                        {formatearCLP(pedido.precioUnitario * pedido.cantidad)}
+                      </span>
+                    </div>
+                  </div>
+
+                  {boletaLocal && (
+                    <details className="account-receipt-details mt-3">
+                      <summary>Ver boleta electrónica</summary>
+                      <div className="account-receipt-content mt-3 p-3 rounded-3">
+                        <div className="d-flex justify-content-between gap-3 mb-3">
+                          <strong className="text-white">MangaFlow SpA</strong>
+                          <span className="text-secondary small">{boletaLocal.folio}</span>
+                        </div>
+                        <div className="d-flex flex-column gap-2 small">
+                          {boletaLocal.subtotalNeto !== undefined && (
+                            <div className="d-flex justify-content-between text-secondary">
+                              <span>Subtotal neto</span><span className="text-white">{formatearCLP(boletaLocal.subtotalNeto)}</span>
+                            </div>
+                          )}
+                          {boletaLocal.iva !== undefined && (
+                            <div className="d-flex justify-content-between text-secondary">
+                              <span>IVA (19%)</span><span className="text-white">{formatearCLP(boletaLocal.iva)}</span>
+                            </div>
+                          )}
+                          {(boletaLocal.descuentoPuntos ?? 0) > 0 && (
+                            <div className="d-flex justify-content-between text-secondary">
+                              <span>Descuento por puntos</span><span className="text-success">−{formatearCLP(boletaLocal.descuentoPuntos ?? 0)}</span>
+                            </div>
+                          )}
+                          {(boletaLocal.descuentoCupon ?? 0) > 0 && (
+                            <div className="d-flex justify-content-between text-secondary">
+                              <span>Cupón físico {boletaLocal.cuponAplicado ? `(${boletaLocal.cuponAplicado})` : ''}</span>
+                              <span className="text-success">−{formatearCLP(boletaLocal.descuentoCupon ?? 0)}</span>
+                            </div>
+                          )}
+                          <div className="d-flex justify-content-between fw-bold border-top border-secondary border-opacity-25 pt-2">
+                            <span className="text-white">Total pagado</span><span className="account-order-total">{formatearCLP(boletaLocal.total)}</span>
+                          </div>
+                          <div className="d-flex justify-content-between text-secondary">
+                            <span>Medio de pago</span><span className="text-white">{boletaLocal.medioPago ?? 'No registrado'}</span>
+                          </div>
+                          {boletaLocal.direccionEntrega && (
+                            <div className="d-flex justify-content-between gap-3 text-secondary">
+                              <span>Entrega</span><span className="text-white text-end">{boletaLocal.direccionEntrega}</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </details>
+                  )}
+                </article>
+              );
+            })}
+          </div>
+        ) : comprasLocales.length === 0 ? (
           <div className="account-empty p-4 rounded-3 text-center">
             <i className="fa-solid fa-receipt text-accent fs-3 mb-2" aria-hidden="true" />
             <p className="text-secondary small mb-2">Aún no tienes compras registradas.</p>
@@ -129,7 +271,7 @@ export const Cuenta = ({ sesion, mangas, alActualizarSesion }: CuentaProps) => {
           </div>
         ) : (
           <div className="d-flex flex-column gap-3">
-            {compras.map(compra => (
+            {comprasLocales.map(compra => (
               <article className="account-order-card p-3 p-md-4 rounded-3" key={compra.id}>
                 <div className="d-flex flex-wrap justify-content-between gap-2 mb-3">
                   <div>
@@ -148,55 +290,6 @@ export const Cuenta = ({ sesion, mangas, alActualizarSesion }: CuentaProps) => {
                     </div>
                   ))}
                 </div>
-                <details className="account-receipt-details mt-3">
-                  <summary>Ver boleta electrónica</summary>
-                  <div className="account-receipt-content mt-3 p-3 rounded-3">
-                    <div className="d-flex justify-content-between gap-3 mb-3">
-                      <strong className="text-white">MangaFlow SpA</strong>
-                      <span className="text-secondary small">{compra.folio}</span>
-                    </div>
-                    <div className="d-flex flex-column gap-2 small">
-                      {compra.subtotalNeto !== undefined && (
-                        <div className="d-flex justify-content-between text-secondary">
-                          <span>Subtotal neto</span><span className="text-white">{formatearCLP(compra.subtotalNeto)}</span>
-                        </div>
-                      )}
-                      {compra.iva !== undefined && (
-                        <div className="d-flex justify-content-between text-secondary">
-                          <span>IVA (19%)</span><span className="text-white">{formatearCLP(compra.iva)}</span>
-                        </div>
-                      )}
-                      {(compra.descuentoPuntos ?? 0) > 0 && (
-                        <div className="d-flex justify-content-between text-secondary">
-                          <span>Descuento por puntos</span><span className="text-success">−{formatearCLP(compra.descuentoPuntos ?? 0)}</span>
-                        </div>
-                      )}
-                      {(compra.descuentoCupon ?? 0) > 0 && (
-                        <div className="d-flex justify-content-between text-secondary">
-                          <span>Cupón físico {compra.cuponAplicado ? `(${compra.cuponAplicado})` : ''}</span>
-                          <span className="text-success">−{formatearCLP(compra.descuentoCupon ?? 0)}</span>
-                        </div>
-                      )}
-                      {(compra.puntosGanados ?? 0) > 0 && (
-                        <div className="d-flex justify-content-between text-secondary">
-                          <span>Puntos ganados por compra física</span>
-                          <span className="text-accent">+{compra.puntosGanados} pts</span>
-                        </div>
-                      )}
-                      <div className="d-flex justify-content-between fw-bold border-top border-secondary border-opacity-25 pt-2">
-                        <span className="text-white">Total pagado</span><span className="account-order-total">{formatearCLP(compra.total)}</span>
-                      </div>
-                      <div className="d-flex justify-content-between text-secondary">
-                        <span>Medio de pago</span><span className="text-white">{compra.medioPago ?? 'No registrado'} (simulado)</span>
-                      </div>
-                      {compra.direccionEntrega && (
-                        <div className="d-flex justify-content-between gap-3 text-secondary">
-                          <span>Entrega</span><span className="text-white text-end">{compra.direccionEntrega}</span>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </details>
               </article>
             ))}
           </div>
