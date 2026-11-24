@@ -1,8 +1,13 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { estadosCertificacion, recompensas, seriesIntercambio, type Recompensa } from '../data/recompensas';
 import { TarjetaRecompensa } from '../componentes/moleculas/TarjetaRecompensa';
 import { AccesoRequerido } from '../componentes/moleculas/AccesoRequerido';
 import { guardarSesion, puntosDeSesion, type SesionUsuario } from '../data/sesion';
+import {
+  acreditarPuntosApi,
+  canjearPuntosApi,
+  obtenerCuentaPuntosApi,
+} from '../services/puntosService';
 
 interface EntregaCertificada {
   id: number;
@@ -18,6 +23,15 @@ interface PuntosProps {
   alActualizarSesion: (sesion: SesionUsuario) => void;
 }
 
+const obtenerPersonaIdDeSesion = (sesion: SesionUsuario | null): number | null => {
+  if (!sesion) return null;
+  const datos = sesion as unknown as Record<string, unknown>;
+  const candidato = datos.personaId ?? datos.usuarioId ?? datos.id;
+  if (typeof candidato === 'number' && Number.isFinite(candidato) && candidato > 0) return candidato;
+  if (typeof candidato === 'string' && /^\d+$/.test(candidato.trim())) return Number(candidato.trim());
+  return null;
+};
+
 export const Puntos = ({ sesion, alActualizarSesion }: PuntosProps) => {
   const [puntosUsuario, setPuntosUsuario] = useState(() => puntosDeSesion(sesion));
   const [pestana, setPestana] = useState<'recompensas' | 'intercambio'>('recompensas');
@@ -27,9 +41,40 @@ export const Puntos = ({ sesion, alActualizarSesion }: PuntosProps) => {
   const [historial, setHistorial] = useState<EntregaCertificada[]>([]);
   const [mensaje, setMensaje] = useState('');
   const [tipoMensaje, setTipoMensaje] = useState<'success' | 'danger'>('success');
+  const [procesandoCanje, setProcesandoCanje] = useState(false);
+  const [procesandoEntrega, setProcesandoEntrega] = useState(false);
 
   const usuarioAutenticado = Boolean(sesion && !sesion.isGuest);
+  const personaId = obtenerPersonaIdDeSesion(sesion);
   const serieSeleccionada = seriesIntercambio.find(serie => serie.id === serieId);
+
+  useEffect(() => {
+    if (!personaId || !sesion || sesion.isGuest) return;
+    let cancelado = false;
+
+    obtenerCuentaPuntosApi(personaId)
+      .then(cuenta => {
+        if (cancelado) return;
+        const saldoReal = cuenta?.saldo ?? 0;
+        setPuntosUsuario(saldoReal);
+        if (saldoReal !== puntosDeSesion(sesion)) {
+          const usuarioActualizado: SesionUsuario = {
+            ...sesion,
+            puntos: saldoReal,
+            points: saldoReal,
+          };
+          guardarSesion(usuarioActualizado);
+          alActualizarSesion(usuarioActualizado);
+        }
+      })
+      .catch(err => {
+        console.warn('No se pudo sincronizar el saldo con puntos-service:', err);
+      });
+
+    return () => {
+      cancelado = true;
+    };
+  }, [personaId]);
 
   const guardarPuntos = (nuevosPuntos: number) => {
     if (!sesion || sesion.isGuest) {
@@ -49,24 +94,46 @@ export const Puntos = ({ sesion, alActualizarSesion }: PuntosProps) => {
     return true;
   };
 
-  const canjearRecompensa = (recompensa: Recompensa) => {
-    if (!usuarioAutenticado) {
+  const canjearRecompensa = async (recompensa: Recompensa) => {
+    if (!usuarioAutenticado || !sesion) {
       setTipoMensaje('danger');
       setMensaje('Debes iniciar sesión para acumular y canjear puntos.');
       return;
     }
 
-    if (puntosUsuario < recompensa.costoPuntos || recompensa.stock <= 0) return;
-    if (guardarPuntos(puntosUsuario - recompensa.costoPuntos)) {
+    if (procesandoCanje || puntosUsuario < recompensa.costoPuntos || recompensa.stock <= 0) return;
+
+    if (!personaId) {
+      if (guardarPuntos(puntosUsuario - recompensa.costoPuntos)) {
+        setTipoMensaje('success');
+        setMensaje(`¡Canjeaste: ${recompensa.nombre}! Se agregará a tu cuenta.`);
+      }
+      return;
+    }
+
+    setProcesandoCanje(true);
+    try {
+      const cuentaActualizada = await canjearPuntosApi(
+        personaId,
+        recompensa.costoPuntos,
+        `Canje de recompensa: ${recompensa.nombre}`,
+      );
+      guardarPuntos(cuentaActualizada.saldo);
       setTipoMensaje('success');
       setMensaje(`¡Canjeaste: ${recompensa.nombre}! Se agregará a tu cuenta.`);
+    } catch (err) {
+      setTipoMensaje('danger');
+      setMensaje(err instanceof Error ? err.message : 'No se pudo procesar el canje de puntos.');
+    } finally {
+      setProcesandoCanje(false);
     }
   };
 
-  const procesarCertificacion = (event: FormEvent<HTMLFormElement>) => {
+  const procesarCertificacion = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (procesandoEntrega) return;
 
-    if (!usuarioAutenticado) {
+    if (!usuarioAutenticado || !sesion) {
       setTipoMensaje('danger');
       setMensaje('Debes iniciar sesión para entregar mangas y reclamar puntos.');
       return;
@@ -81,22 +148,42 @@ export const Puntos = ({ sesion, alActualizarSesion }: PuntosProps) => {
       return;
     }
 
-    if (!guardarPuntos(puntosUsuario + estado.puntos)) return;
+    const form = event.currentTarget;
+    setProcesandoEntrega(true);
 
-    setHistorial(items => [{
-      id: Date.now(),
-      titulo: manga.titulo,
-      tomo: tomoNumero,
-      estado: estado.label,
-      color: estado.color,
-      puntos: estado.puntos,
-    }, ...items]);
-    setSerieId('');
-    setTomo('');
-    setEstadoSeleccionado('bueno');
-    setTipoMensaje('success');
-    setMensaje(`¡Entrega procesada! Se acreditaron ${estado.puntos} puntos.`);
-    event.currentTarget.reset();
+    try {
+      let nuevoSaldo = puntosUsuario + estado.puntos;
+      if (personaId) {
+        const cuentaActualizada = await acreditarPuntosApi(
+          personaId,
+          estado.puntos,
+          `Entrega manga usado: ${manga.titulo} Tomo ${tomoNumero} (${estado.label})`,
+        );
+        nuevoSaldo = cuentaActualizada.saldo;
+      }
+
+      if (!guardarPuntos(nuevoSaldo)) return;
+
+      setHistorial(items => [{
+        id: Date.now(),
+        titulo: manga.titulo,
+        tomo: tomoNumero,
+        estado: estado.label,
+        color: estado.color,
+        puntos: estado.puntos,
+      }, ...items]);
+      setSerieId('');
+      setTomo('');
+      setEstadoSeleccionado('bueno');
+      setTipoMensaje('success');
+      setMensaje(`¡Entrega procesada! Se acreditaron ${estado.puntos} puntos.`);
+      form.reset();
+    } catch (err) {
+      setTipoMensaje('danger');
+      setMensaje(err instanceof Error ? err.message : 'No se pudieron acreditar los puntos en el servidor.');
+    } finally {
+      setProcesandoEntrega(false);
+    }
   };
 
   if (!usuarioAutenticado) {
@@ -248,8 +335,8 @@ export const Puntos = ({ sesion, alActualizarSesion }: PuntosProps) => {
                   </div>
                 </fieldset>
 
-                <button className="btn-magenta w-100 mt-2" type="submit">
-                  Entregar y reclamar puntos
+                <button className="btn-magenta w-100 mt-2" type="submit" disabled={procesandoEntrega}>
+                  {procesandoEntrega ? 'Acreditando puntos...' : 'Entregar y reclamar puntos'}
                 </button>
                 {!usuarioAutenticado && (
                   <p className="text-secondary small mt-3 mb-0">

@@ -8,6 +8,7 @@ import {
   obtenerPedidosPorPersonaApi,
   type PedidoBackendResponse,
 } from '../services/pedidosService';
+import { obtenerCuentaPuntosApi } from '../services/puntosService';
 
 interface CuentaProps {
   sesion: SesionUsuario | null;
@@ -57,10 +58,26 @@ export const Cuenta = ({ sesion, mangas, alActualizarSesion }: CuentaProps) => {
         if (!cancelado) setCargandoPedidos(false);
       });
 
+    obtenerCuentaPuntosApi(personaId)
+      .then(cuenta => {
+        if (cancelado) return;
+        const saldoReal = cuenta?.saldo ?? 0;
+        if (saldoReal !== puntosDeSesion(sesion)) {
+          alActualizarSesion({
+            ...sesion,
+            puntos: saldoReal,
+            points: saldoReal,
+          });
+        }
+      })
+      .catch(err => {
+        console.warn('No se pudo sincronizar el saldo con puntos-service:', err);
+      });
+
     return () => {
       cancelado = true;
     };
-  }, [personaId, sesion]);
+  }, [personaId]);
 
   if (!sesion || sesion.isGuest) {
     return (

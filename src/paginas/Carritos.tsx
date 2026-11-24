@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { AccesoRequerido } from '../componentes/moleculas/AccesoRequerido';
 import {
@@ -14,6 +14,11 @@ import {
   crearPagoApi,
   type MetodoPagoBackend,
 } from '../services/pagosService';
+import {
+  acumularPuntosApi,
+  canjearPuntosApi,
+  obtenerCuentaPuntosApi,
+} from '../services/puntosService';
 
 const descuentoCuponDigital = PRECIO_MANGA_DIGITAL;
 const puntosPorCadaMilPesosFisicos = 10;
@@ -89,6 +94,7 @@ export const Carritos = ({
   const [comuna, setComuna] = useState('');
 
   const usuarioAutenticado = Boolean(sesion && !sesion.isGuest);
+  const personaId = obtenerPersonaIdDeSesion(sesion);
   const puntosDisponibles = puntosDeSesion(sesion);
   const cantidadItems = contarItemsCarrito(items);
   const subtotalBruto = items.reduce((total, item) => total + item.precio * item.quantity, 0);
@@ -114,6 +120,31 @@ export const Carritos = ({
   const mediosPagoDisponibles = mediosPago.filter(medio => (
     medio !== 'Efectivo al retirar' || (tieneProductosFisicos && tipoEntrega === 'retiro')
   ));
+
+  useEffect(() => {
+    if (!personaId || !sesion || sesion.isGuest) return;
+    let cancelado = false;
+
+    obtenerCuentaPuntosApi(personaId)
+      .then(cuenta => {
+        if (cancelado) return;
+        const saldoReal = cuenta?.saldo ?? 0;
+        if (saldoReal !== puntosDeSesion(sesion)) {
+          alActualizarSesion({
+            ...sesion,
+            puntos: saldoReal,
+            points: saldoReal,
+          });
+        }
+      })
+      .catch(err => {
+        console.warn('No se pudo sincronizar el saldo de puntos en el carrito:', err);
+      });
+
+    return () => {
+      cancelado = true;
+    };
+  }, [personaId]);
 
   const resolverMangaId = (item: CarritoItem): number | null => {
     if (typeof item.mangaId === 'number' && item.mangaId > 0) return item.mangaId;
@@ -141,7 +172,6 @@ export const Carritos = ({
       return;
     }
 
-    const personaId = obtenerPersonaIdDeSesion(sesion);
     if (!personaId) {
       setError('Tu sesión actual no tiene un ID de usuario válido en el backend. Cierra sesión e inicia sesión nuevamente.');
       return;
@@ -165,6 +195,16 @@ export const Carritos = ({
       const sesionRecord = sesion as unknown as Record<string, unknown>;
       const token = typeof sesionRecord.token === 'string' ? sesionRecord.token : undefined;
 
+      let saldoActualBackend = puntosDisponibles;
+      if (descuentoPuntos > 0) {
+        const cuentaTrasCanje = await canjearPuntosApi(
+          personaId,
+          descuentoPuntos,
+          'Canje de puntos como descuento en compra',
+        );
+        saldoActualBackend = cuentaTrasCanje.saldo;
+      }
+
       const pedidosCreados = [];
       for (const { item, mangaId } of itemsConMangaId) {
         const creado = await crearPedidoApi(
@@ -179,12 +219,15 @@ export const Carritos = ({
         pedidosCreados.push(creado);
       }
 
+      let puntosGanadosReales = 0;
+
       if (totalConDescuento > 0 && subtotalBruto > 0) {
         const metodoBackend = mapMetodoPagoBackend(medioPago);
         let montoRestante = totalConDescuento;
 
         for (let idx = 0; idx < pedidosCreados.length; idx += 1) {
           const pedido = pedidosCreados[idx];
+          const itemActual = itemsConMangaId[idx].item;
           const esUltimo = idx === pedidosCreados.length - 1;
           const montoProporcional = esUltimo
             ? Math.max(1, montoRestante)
@@ -199,12 +242,20 @@ export const Carritos = ({
 
           if (metodoBackend !== 'EFECTIVO') {
             await aprobarPagoApi(pagoCreado.id);
+
+            const esFisico = itemActual.formato.toLocaleLowerCase('es') !== 'digital';
+            if (esFisico && montoProporcional >= 1000) {
+              const saldoPrevio = saldoActualBackend;
+              const cuentaTrasAcumular = await acumularPuntosApi(personaId, pagoCreado.id);
+              saldoActualBackend = cuentaTrasAcumular.saldo;
+              puntosGanadosReales += Math.max(0, cuentaTrasAcumular.saldo - saldoPrevio);
+            }
           }
         }
       }
 
-      const puntosGanados = puntosGanables;
-      const nuevosPuntos = Math.max(0, puntosDisponibles - descuentoPuntos + puntosGanados);
+      const puntosGanados = puntosGanadosReales;
+      const nuevosPuntos = saldoActualBackend;
       const primerPedidoId = pedidosCreados[0]?.id;
       const folio = primerPedidoId
         ? `MF-${String(primerPedidoId).padStart(5, '0')}`
