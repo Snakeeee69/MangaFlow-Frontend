@@ -6,8 +6,9 @@ import {
   formatearCLP,
   type CarritoItem,
 } from '../data/carrito';
-import { PRECIO_MANGA_DIGITAL } from '../data/catalogo';
+import { PRECIO_MANGA_DIGITAL, type MangaCatalogo } from '../data/catalogo';
 import { puntosDeSesion, type LibroBiblioteca, type SesionUsuario } from '../data/sesion';
+import { crearPedidoApi } from '../services/pedidosService';
 
 const descuentoCuponDigital = PRECIO_MANGA_DIGITAL;
 const puntosPorCadaMilPesosFisicos = 10;
@@ -35,6 +36,7 @@ const mediosPago = ['Débito', 'Crédito', 'Transferencia', 'Efectivo al retirar
 
 interface CarritosProps {
   items: CarritoItem[];
+  catalogo?: MangaCatalogo[];
   sesion: SesionUsuario | null;
   alActualizarSesion: (sesion: SesionUsuario) => void;
   alCambiarCantidad: (id: string, cambio: number) => void;
@@ -42,8 +44,22 @@ interface CarritosProps {
   alVaciar: () => void;
 }
 
+const obtenerPersonaIdDeSesion = (sesion: SesionUsuario | null): number | null => {
+  if (!sesion) return null;
+  const datos = sesion as unknown as Record<string, unknown>;
+  const candidato = datos.personaId ?? datos.usuarioId ?? datos.id;
+  if (typeof candidato === 'number' && Number.isFinite(candidato) && candidato > 0) {
+    return candidato;
+  }
+  if (typeof candidato === 'string' && /^\d+$/.test(candidato.trim())) {
+    return Number(candidato.trim());
+  }
+  return null;
+};
+
 export const Carritos = ({
   items,
+  catalogo = [],
   sesion,
   alActualizarSesion,
   alCambiarCantidad,
@@ -54,6 +70,7 @@ export const Carritos = ({
   const [usarCupon, setUsarCupon] = useState(false);
   const [boleta, setBoleta] = useState<Boleta | null>(null);
   const [error, setError] = useState('');
+  const [procesando, setProcesando] = useState(false);
   const [medioPago, setMedioPago] = useState('Débito');
   const [tipoEntrega, setTipoEntrega] = useState<TipoEntrega>('despacho');
   const [direccion, setDireccion] = useState('');
@@ -86,9 +103,19 @@ export const Carritos = ({
     medio !== 'Efectivo al retirar' || (tieneProductosFisicos && tipoEntrega === 'retiro')
   ));
 
-  const pagar = (event: FormEvent<HTMLFormElement>) => {
+  const resolverMangaId = (item: CarritoItem): number | null => {
+    if (typeof item.mangaId === 'number' && item.mangaId > 0) return item.mangaId;
+    const encontrado = catalogo.find(
+      m => m.titulo.trim().toLocaleLowerCase('es') === item.titulo.trim().toLocaleLowerCase('es'),
+    );
+    return encontrado?.id ?? null;
+  };
+
+  const pagar = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!usuarioAutenticado) {
+    if (procesando) return;
+
+    if (!usuarioAutenticado || !sesion) {
       setError('Debes iniciar sesión para completar una compra.');
       return;
     }
@@ -102,11 +129,50 @@ export const Carritos = ({
       return;
     }
 
+    const personaId = obtenerPersonaIdDeSesion(sesion);
+    if (!personaId) {
+      setError('Tu sesión actual no tiene un ID de usuario válido en el backend. Cierra sesión e inicia sesión nuevamente.');
+      return;
+    }
+
+    const itemsConMangaId = items.map(item => ({
+      item,
+      mangaId: resolverMangaId(item),
+    }));
+
+    const itemSinId = itemsConMangaId.find(entry => entry.mangaId === null);
+    if (itemSinId) {
+      setError(`No se encontró el ID del manga "${itemSinId.item.titulo}" en el catálogo.`);
+      return;
+    }
+
+    setProcesando(true);
+    setError('');
+
     try {
-      if (!sesion) return;
+      const sesionRecord = sesion as unknown as Record<string, unknown>;
+      const token = typeof sesionRecord.token === 'string' ? sesionRecord.token : undefined;
+
+      const pedidosCreados = [];
+      for (const { item, mangaId } of itemsConMangaId) {
+        const creado = await crearPedidoApi(
+          {
+            personaId,
+            mangaId: mangaId!,
+            cantidad: item.quantity,
+            precioUnitario: Math.max(1, item.precio),
+          },
+          token,
+        );
+        pedidosCreados.push(creado);
+      }
+
       const puntosGanados = puntosGanables;
       const nuevosPuntos = Math.max(0, puntosDisponibles - descuentoPuntos + puntosGanados);
-      const folio = `MF-${String((sesion.compras?.length ?? 0) + 1).padStart(5, '0')}`;
+      const primerPedidoId = pedidosCreados[0]?.id;
+      const folio = primerPedidoId
+        ? `MF-${String(primerPedidoId).padStart(5, '0')}`
+        : `MF-${String((sesion.compras?.length ?? 0) + 1).padStart(5, '0')}`;
       const fecha = new Date().toISOString();
       const codigoCuponAplicado = cuponAplicable ? cuponesDisponibles[0] : undefined;
       const cantidadCuponesGanados = items
@@ -149,6 +215,7 @@ export const Carritos = ({
         : tipoEntregaFinal === 'retiro'
           ? 'Retiro en tienda MangaFlow'
           : 'Entrega digital en Mi Biblioteca';
+
       alActualizarSesion({
         ...sesion,
         puntos: nuevosPuntos,
@@ -175,6 +242,7 @@ export const Carritos = ({
           items: itemsComprados,
         }, ...(sesion.compras ?? [])],
       });
+
       setBoleta({
         folio,
         fecha: new Date(fecha).toLocaleDateString('sv-SE'),
@@ -196,8 +264,13 @@ export const Carritos = ({
       alVaciar();
       setPuntosAplicar(0);
     } catch (cause) {
-      console.error('No se pudo guardar la compra simulada.', cause);
-      setError('No se pudo completar la compra. Revisa el almacenamiento del navegador e inténtalo nuevamente.');
+      console.error('Error al registrar el pedido en pedidos-service:', cause);
+      const mensaje = cause instanceof Error
+        ? cause.message
+        : 'No se pudo registrar el pedido en el servidor. Inténtalo nuevamente.';
+      setError(mensaje);
+    } finally {
+      setProcesando(false);
     }
   };
 
@@ -223,7 +296,7 @@ export const Carritos = ({
 
         {error && (
           <div className="alert alert-danger d-flex justify-content-between align-items-center" role="alert">
-            {error}
+            <span>{error}</span>
             <button type="button" className="btn-close btn-close-white" aria-label="Cerrar" onClick={() => setError('')} />
           </div>
         )}
@@ -454,7 +527,7 @@ export const Carritos = ({
                       ))}
                     </div>
                     <p className="text-secondary cart-simulation-note mt-2 mb-0">
-                      Solo seleccionas el medio. No ingreses datos de tarjetas ni cuentas; el pago es simulado.
+                      Solo seleccionas el medio. No ingreses datos de tarjetas ni cuentas.
                     </p>
                   </fieldset>
 
@@ -465,12 +538,12 @@ export const Carritos = ({
                     </p>
                   )}
 
-                  <button className="btn-magenta w-100 py-3" type="submit">
+                  <button className="btn-magenta w-100 py-3" type="submit" disabled={procesando}>
                     <i className="fa-solid fa-bag-shopping me-2" aria-hidden="true" />
-                    Confirmar compra
+                    {procesando ? 'Registrando pedido...' : 'Confirmar compra'}
                   </button>
                   <p className="text-secondary text-center cart-simulation-note mt-3 mb-0">
-                    La boleta quedará guardada en Mi cuenta. El envío por correo requiere configurar un servicio de correo.
+                    El pedido quedará guardado en la base de datos y la boleta en Mi cuenta.
                   </p>
                 </form>
               </section>
@@ -489,7 +562,7 @@ export const Carritos = ({
                 <span className="receipt-success-icon"><i className="fa-solid fa-check" aria-hidden="true" /></span>
                 <div>
                   <h2 className="receipt-title" id="receipt-title">Compra aprobada</h2>
-                  <p className="small text-white-50 mb-0">Boleta electrónica simulada</p>
+                  <p className="small text-white-50 mb-0">Boleta electrónica</p>
                 </div>
               </div>
               <button className="reader-close" type="button" aria-label="Cerrar boleta" onClick={() => setBoleta(null)}>
@@ -550,7 +623,7 @@ export const Carritos = ({
               </div>
               <div className="receipt-payment p-3 rounded-3 d-flex justify-content-between align-items-center mb-3">
                 <span className="text-secondary small">Medio de pago</span>
-                <span className="fw-semibold text-white small">{boleta.medioPago} (Simulado)</span>
+                <span className="fw-semibold text-white small">{boleta.medioPago}</span>
               </div>
               {boleta.tipoEntrega !== 'digital' && (
                 <div className="receipt-payment p-3 rounded-3 d-flex justify-content-between gap-3 mb-3">

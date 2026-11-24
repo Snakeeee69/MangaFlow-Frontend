@@ -240,6 +240,7 @@ const Aplicacion = () => {
             element={(
               <Carritos
                 items={carrito}
+                catalogo={catalogo}
                 sesion={sesion}
                 alActualizarSesion={actualizarSesion}
                 alCambiarCantidad={cambiarCantidadCarrito}
