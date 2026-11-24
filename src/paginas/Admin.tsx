@@ -16,10 +16,15 @@ import {
   esMangaActivo,
   generosCatalogo,
   PRECIO_MANGA_DIGITAL,
-  slugManga,
   type MangaCatalogo,
 } from '../data/catalogo';
 import type { RolMangaFlow } from '../data/sesion';
+import {
+  actualizarMangaApi,
+  cambiarEstadoMangaApi,
+  crearMangaApi,
+  eliminarMangaApi,
+} from '../services/catalogoService';
 
 interface AdminProps {
   mangas: MangaCatalogo[];
@@ -156,7 +161,7 @@ export const Admin = ({ mangas, alGuardarCatalogo, rol }: AdminProps) => {
     setFormulario(actual => ({ ...actual, [campo]: valor }));
   };
 
-  const guardarNuevoManga = (event: FormEvent<HTMLFormElement>) => {
+  const guardarNuevoManga = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setError('');
     setMensaje('');
@@ -170,51 +175,70 @@ export const Admin = ({ mangas, alGuardarCatalogo, rol }: AdminProps) => {
       setError('Completa un título, un precio mayor que cero y un stock entero igual o superior a cero.');
       return;
     }
-    if (mangas.some(manga => slugManga(manga.titulo) === slugManga(titulo))) {
-      setError('Ya existe un manga con ese título en el catálogo.');
-      return;
+
+    try {
+      const creado = await crearMangaApi({
+        titulo,
+        precio,
+        precioDigital: PRECIO_MANGA_DIGITAL,
+        demografia: formulario.demografia,
+        generos: [formulario.genero],
+        esDigitalOnly: formulario.digital,
+        imagen: rutaImagen || '/images/logo/logoMangaFlow.png',
+        autor: formulario.autor.trim() || undefined,
+        sinopsis: formulario.sinopsis.trim() || undefined,
+        activo: true,
+        stock,
+      });
+
+      alGuardarCatalogo([...mangas, creado]);
+      setFormulario(formularioInicial);
+      setMostrarFormulario(false);
+      setMensaje(`${creado.titulo} se guardó en MySQL y apareció en el catálogo.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'No se pudo guardar el manga en el servidor.');
     }
-
-    const nuevoManga: MangaCatalogo = {
-      id: Math.max(0, ...mangas.map(manga => manga.id)) + 1,
-      titulo,
-      precio,
-      precioDigital: PRECIO_MANGA_DIGITAL,
-      demografia: formulario.demografia,
-      generos: [formulario.genero],
-      esDigitalOnly: formulario.digital,
-      imagen: rutaImagen || '/images/logo/logoMangaFlow.png',
-      autor: formulario.autor.trim() || undefined,
-      sinopsis: formulario.sinopsis.trim() || undefined,
-      activo: true,
-      stock,
-    };
-
-    alGuardarCatalogo([...mangas, nuevoManga]);
-    setFormulario(formularioInicial);
-    setMostrarFormulario(false);
-    setMensaje(`${titulo} se agregó al catálogo.`);
   };
 
-  const cambiarVisibilidad = (manga: MangaCatalogo) => {
+  const cambiarVisibilidad = async (manga: MangaCatalogo) => {
     if (!esAdministrador && !esMangaActivo(manga)) return;
-    const activo = !esMangaActivo(manga);
-    alGuardarCatalogo(mangas.map(item => item.id === manga.id ? { ...item, activo } : item));
-    setMensaje(activo ? `${manga.titulo} volvió a estar visible.` : `${manga.titulo} se ocultó. Puedes restaurarlo cuando quieras.`);
+    const activar = !esMangaActivo(manga);
+    try {
+      const actualizado = await cambiarEstadoMangaApi(manga.id, activar);
+      alGuardarCatalogo(mangas.map(item => item.id === manga.id ? actualizado : item));
+      setMensaje(activar ? `${manga.titulo} volvió a estar visible.` : `${manga.titulo} se archivó en la base de datos.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'No se pudo cambiar la visibilidad.');
+    }
   };
 
-  const actualizarStock = (manga: MangaCatalogo, valor: string) => {
+  const actualizarStockLocal = (manga: MangaCatalogo, valor: string) => {
     if (!esMangaActivo(manga)) return;
     const stock = Number(valor);
     if (!Number.isInteger(stock) || stock < 0) return;
     alGuardarCatalogo(mangas.map(item => item.id === manga.id ? { ...item, stock } : item));
   };
 
-  const eliminarManga = (manga: MangaCatalogo) => {
+  const guardarStockEnServidor = async (manga: MangaCatalogo) => {
+    if (!esMangaActivo(manga)) return;
+    try {
+      const actualizado = await actualizarMangaApi(manga);
+      alGuardarCatalogo(mangas.map(item => item.id === manga.id ? actualizado : item));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'No se pudo actualizar el stock.');
+    }
+  };
+
+  const eliminarManga = async (manga: MangaCatalogo) => {
     if (!esAdministrador) return;
-    if (!window.confirm(`¿Eliminar definitivamente "${manga.titulo}" del catálogo? Esta acción no se puede deshacer.`)) return;
-    alGuardarCatalogo(mangas.filter(item => item.id !== manga.id));
-    setMensaje(`${manga.titulo} se eliminó definitivamente del catálogo.`);
+    if (!window.confirm(`¿Eliminar definitivamente "${manga.titulo}" de la base de datos?`)) return;
+    try {
+      await eliminarMangaApi(manga.id);
+      alGuardarCatalogo(mangas.filter(item => item.id !== manga.id));
+      setMensaje(`${manga.titulo} se eliminó definitivamente de MySQL.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'No se pudo eliminar el manga.');
+    }
   };
 
   return (
@@ -453,7 +477,15 @@ export const Admin = ({ mangas, alGuardarCatalogo, rol }: AdminProps) => {
                 <div className="d-flex align-items-center gap-2 flex-shrink-0">
                   <label className="admin-stock-control">
                     <span className="visually-hidden">Stock de {manga.titulo}</span>
-                    <input type="number" min="0" step="1" value={manga.stock ?? 0} onChange={event => actualizarStock(manga, event.target.value)} disabled={!activo} />
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={manga.stock ?? 0}
+                      onChange={event => actualizarStockLocal(manga, event.target.value)}
+                      onBlur={() => guardarStockEnServidor(manga)}
+                      disabled={!activo}
+                    />
                   </label>
                   <div className="d-flex flex-wrap align-items-center justify-content-end gap-2">
                     {(activo || esAdministrador) && (

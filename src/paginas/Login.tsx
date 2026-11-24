@@ -32,32 +32,26 @@ interface PersonaBackendResponse {
   activo: boolean;
 }
 
-const dominiosPermitidos = ['@duoc.cl', '@profesor.duoc.cl', '@gmail.com', '@mangaflow.cl', '@mangaflow.com'];
 const correoConFormatoValido = (correo: string) => (
   correo.length <= 100 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correo)
 );
-const correoUsuarioPermitido = (correo: string) => (
-  correoConFormatoValido(correo)
-  && dominiosPermitidos.some(dominio => correo.toLocaleLowerCase('es').endsWith(dominio))
-);
-const obtenerAyudaCorreo = (correo: string, esRegistro: boolean) => {
+
+const obtenerAyudaCorreo = (correo: string) => {
   const valor = correo.trim();
   if (!valor) return '';
   if (valor.length > 100) return 'El correo no puede superar los 100 caracteres.';
-  if (!valor.includes('@')) return 'Te falta el @ y el dominio, por ejemplo nombre@gmail.com.';
+  if (!valor.includes('@')) return 'Te falta el @ y el dominio, por ejemplo nombre@duocuc.cl.';
   if ((valor.match(/@/g) ?? []).length > 1) return 'Usa un solo @ en el correo.';
 
   const [usuario, dominio = ''] = valor.split('@');
   if (!usuario) return 'Escribe el nombre antes del @.';
-  if (!dominio) return 'Después del @ escribe tu dominio, por ejemplo gmail.com.';
+  if (!dominio) return 'Después del @ escribe tu dominio, por ejemplo duocuc.cl o gmail.com.';
   if (!dominio.includes('.')) return 'Al dominio le falta un punto y su terminación, por ejemplo .com o .cl.';
   if (dominio.endsWith('.')) return 'Después del punto falta la terminación del dominio, por ejemplo com o cl.';
-  if (!correoConFormatoValido(valor)) return 'Revisa el correo: debe tener un formato como nombre@gmail.com.';
-  if (esRegistro && !correoUsuarioPermitido(valor)) {
-    return 'Ese dominio no está habilitado para el registro.';
-  }
+  if (!correoConFormatoValido(valor)) return 'Revisa el correo: debe tener un formato como nombre@duocuc.cl.';
   return 'El formato del correo se ve correcto.';
 };
+
 const contrasenaValida = (contrasena: string) => (
   contrasena.length >= 4 && contrasena.length <= 10
 );
@@ -87,7 +81,7 @@ export const Login = ({ sesion, alIniciarSesion, alIngresarInvitado, alCerrarSes
   const navigate = useNavigate();
   const destino = (location.state as { desde?: string } | null)?.desde;
   const usuarioAutenticado = Boolean(sesion && !sesion.isGuest && sesion.token);
-  const ayudaCorreo = obtenerAyudaCorreo(correo, modo === 'registro');
+  const ayudaCorreo = obtenerAyudaCorreo(correo);
 
   const iniciarSesion = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -122,7 +116,6 @@ export const Login = ({ sesion, alIniciarSesion, alIngresarInvitado, alCerrarSes
         );
         if (persona?.nombre) nombreBackend = persona.nombre;
       } catch {
-        // Fallback al nombre derivado del correo si personas-service no responde
       }
 
       const rolFrontend = rolBackendAFrontend(respuestaAuth.rol);
@@ -164,8 +157,8 @@ export const Login = ({ sesion, alIniciarSesion, alIngresarInvitado, alCerrarSes
       setError('Escribe un nombre de entre 2 y 60 caracteres.');
       return;
     }
-    if (!correoUsuarioPermitido(email)) {
-      setError('Usa un correo válido @duoc.cl, @profesor.duoc.cl, @gmail.com o @mangaflow.cl.');
+    if (!correoConFormatoValido(email)) {
+      setError('Ingresa un correo electrónico válido (ej: nombre@duocuc.cl).');
       return;
     }
     if (!contrasenaValida(password)) {
@@ -182,7 +175,6 @@ export const Login = ({ sesion, alIniciarSesion, alIngresarInvitado, alCerrarSes
       const rolFrontend = rolPorCorreo(email);
       const rolBackend = rolFrontendABackend(rolFrontend);
 
-      // 1. Crear persona en personas-service
       const personaCreada = await apiFetch<PersonaBackendResponse>('/mangas/personas', {
         method: 'POST',
         body: JSON.stringify({
@@ -194,7 +186,6 @@ export const Login = ({ sesion, alIniciarSesion, alIngresarInvitado, alCerrarSes
         }),
       });
 
-      // 2. Registrar credencial en auth-service
       await apiFetch('/mangas/auth/registrar', {
         method: 'POST',
         body: JSON.stringify({
@@ -205,7 +196,6 @@ export const Login = ({ sesion, alIniciarSesion, alIngresarInvitado, alCerrarSes
         }),
       });
 
-      // 3. Iniciar sesión automáticamente para obtener el JWT
       const respuestaAuth = await apiFetch<LoginBackendResponse>('/mangas/auth/login', {
         method: 'POST',
         body: JSON.stringify({ correo: email, password }),
@@ -283,7 +273,7 @@ export const Login = ({ sesion, alIniciarSesion, alIngresarInvitado, alCerrarSes
                     id="register-name"
                     className="form-control bg-dark text-white border-secondary border-opacity-25"
                     type="text"
-                    autoComplete="name"
+                    autoComplete="off"
                     placeholder="Tu nombre"
                     value={nombreCompleto}
                     onChange={event => setNombreCompleto(event.target.value)}
@@ -298,8 +288,8 @@ export const Login = ({ sesion, alIniciarSesion, alIngresarInvitado, alCerrarSes
                   id={modo === 'registro' ? 'register-email' : 'login-email'}
                   className={`form-control bg-dark text-white border-secondary border-opacity-25 ${ayudaCorreo && (ayudaCorreo.startsWith('El formato') ? 'email-hint-valid' : 'email-hint-invalid')}`}
                   type="email"
-                  autoComplete="email"
-                  placeholder="nombre@duoc.cl"
+                  autoComplete="off"
+                  placeholder="nombre@duocuc.cl"
                   value={correo}
                   onChange={event => setCorreo(event.target.value)}
                   aria-describedby={modo === 'registro' ? 'register-email-hint' : 'login-email-hint'}
@@ -307,7 +297,7 @@ export const Login = ({ sesion, alIniciarSesion, alIngresarInvitado, alCerrarSes
                 />
                 <div id={modo === 'registro' ? 'register-email-hint' : 'login-email-hint'} className="form-text text-secondary login-hint">
                   {modo === 'registro'
-                    ? 'Permitidos: @duoc.cl, @profesor.duoc.cl, @gmail.com (o @mangaflow.cl para admin)'
+                    ? 'Ingresa cualquier correo electrónico válido (ej: @duocuc.cl, @gmail.com)'
                     : 'Ingresa tu correo registrado'}
                 </div>
                 {ayudaCorreo && (

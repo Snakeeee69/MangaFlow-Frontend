@@ -24,7 +24,7 @@ export const Cabecera = ({ cantidadCarrito, paginaActiva, sesion, alCerrarSesion
 
   return (
     <>
-      <header className="app-header text-center py-4">
+      <header className="app-header text-center py-3 py-md-4">
         <div className="container">
           <a href="#/inicio" className="text-decoration-none">
             <span className="brand-logo d-inline-flex align-items-center justify-content-center mb-2">
@@ -40,8 +40,8 @@ export const Cabecera = ({ cantidadCarrito, paginaActiva, sesion, alCerrarSesion
         </div>
       </header>
 
-      <nav className="app-navbar px-3 px-lg-4 py-3" aria-label="Navegación principal">
-        <div className="container-fluid d-flex flex-wrap justify-content-center">
+      <nav className="app-navbar px-3 px-lg-4 py-2 py-lg-3" aria-label="Navegación principal">
+        <div className="container-fluid nav-container">
           <button
             type="button"
             className="mobile-menu-button"
@@ -79,31 +79,31 @@ export const Cabecera = ({ cantidadCarrito, paginaActiva, sesion, alCerrarSesion
                 </li>
               )}
             </ul>
+          </div>
 
-            <div className="header-actions d-flex align-items-center gap-2">
-              <span className="user-badge badge px-3 py-2 rounded-3">
-                {sesion?.nombre || (sesion?.isGuest ? 'Invitado' : 'Sin sesión')}
-              </span>
-              {usuarioAutenticado ? (
-                <button
-                  className="header-icon-button"
-                  type="button"
-                  onClick={alCerrarSesion}
-                  aria-label="Cerrar sesión"
-                  title="Cerrar sesión"
-                >
-                  <i className="fa-solid fa-right-from-bracket" aria-hidden="true" />
-                </button>
-              ) : (
-                <a className="header-icon-button" href="#/login" aria-label="Iniciar sesión" title="Iniciar sesión">
-                  <i className="fa-solid fa-right-to-bracket" aria-hidden="true" />
-                </a>
-              )}
-              <a className="header-icon-button position-relative" href="#/carrito" aria-label="Carrito" title="Carrito">
-                <i className="fa-solid fa-cart-shopping" aria-hidden="true" />
-                <span className="cart-count">{cantidadCarrito}</span>
+          <div className="header-actions d-flex align-items-center gap-2">
+            <span className="user-badge badge px-2 px-sm-3 py-2 rounded-3">
+              {sesion?.nombre || (sesion?.isGuest ? 'Invitado' : 'Sin sesión')}
+            </span>
+            {usuarioAutenticado ? (
+              <button
+                className="header-icon-button"
+                type="button"
+                onClick={alCerrarSesion}
+                aria-label="Cerrar sesión"
+                title="Cerrar sesión"
+              >
+                <i className="fa-solid fa-right-from-bracket" aria-hidden="true" />
+              </button>
+            ) : (
+              <a className="header-icon-button" href="#/login" aria-label="Iniciar sesión" title="Iniciar sesión">
+                <i className="fa-solid fa-right-to-bracket" aria-hidden="true" />
               </a>
-            </div>
+            )}
+            <a className="header-icon-button position-relative" href="#/carrito" aria-label="Carrito" title="Carrito">
+              <i className="fa-solid fa-cart-shopping" aria-hidden="true" />
+              <span className="cart-count">{cantidadCarrito}</span>
+            </a>
           </div>
         </div>
       </nav>

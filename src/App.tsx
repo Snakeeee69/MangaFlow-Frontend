@@ -27,6 +27,7 @@ import {
   guardarSesion,
   type SesionUsuario,
 } from './data/sesion';
+import { obtenerCatalogoApi } from './services/catalogoService';
 
 const Aplicacion = () => {
   const [sesion, setSesion] = useState<SesionUsuario | null>(cargarSesion);
@@ -75,6 +76,18 @@ const Aplicacion = () => {
       console.error('No se pudo guardar el catálogo en el almacenamiento local.', error);
     }
   }, [catalogo]);
+
+  useEffect(() => {
+    let cancelado = false;
+    obtenerCatalogoApi()
+      .then(lista => {
+        if (!cancelado && lista.length > 0) setCatalogo(lista);
+      })
+      .catch(err => console.warn('Usando catálogo local de respaldo:', err));
+    return () => {
+      cancelado = true;
+    };
+  }, []);
 
   const agregarAlCarrito = (producto: CarritoItem) => {
     if (!sesion || sesion.isGuest) {
