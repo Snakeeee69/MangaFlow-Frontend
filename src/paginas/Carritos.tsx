@@ -19,9 +19,16 @@ import {
   canjearPuntosApi,
   obtenerCuentaPuntosApi,
 } from '../services/puntosService';
+import {
+  calcularDescuentoApi,
+  desactivarDescuentoApi,
+  listarDescuentosPorPersonaApi,
+  type DescuentoResponse,
+} from '../services/descuentosService';
 
 const descuentoCuponDigital = PRECIO_MANGA_DIGITAL;
 const puntosPorCadaMilPesosFisicos = 10;
+const DIRECCION_TIENDA_EUROCENTRO = 'Ahumada 85, Eurocentro, Santiago (Planta -1, Local 12)';
 
 interface Boleta {
   folio: string;
@@ -85,6 +92,7 @@ export const Carritos = ({
 }: CarritosProps) => {
   const [puntosAplicar, setPuntosAplicar] = useState(0);
   const [usarCupon, setUsarCupon] = useState(false);
+  const [descuentosBackend, setDescuentosBackend] = useState<DescuentoResponse[]>([]);
   const [boleta, setBoleta] = useState<Boleta | null>(null);
   const [error, setError] = useState('');
   const [procesando, setProcesando] = useState(false);
@@ -98,14 +106,15 @@ export const Carritos = ({
   const puntosDisponibles = puntosDeSesion(sesion);
   const cantidadItems = contarItemsCarrito(items);
   const subtotalBruto = items.reduce((total, item) => total + item.precio * item.quantity, 0);
-  const cuponesDisponibles = Array.isArray(sesion?.cuponesFisicos) ? sesion.cuponesFisicos : [];
+  const cuponesLocales = Array.isArray(sesion?.cuponesFisicos) ? sesion.cuponesFisicos : [];
+  const totalCuponesDisponibles = Math.max(cuponesLocales.length, descuentosBackend.length);
   const tieneProductosFisicos = items.some(item => item.formato.toLocaleLowerCase('es') !== 'digital');
   const tieneProductosDigitales = items.some(item => item.formato.toLocaleLowerCase('es') === 'digital');
   const subtotalFisico = items.reduce(
     (total, item) => total + (item.formato.toLocaleLowerCase('es') !== 'digital' ? item.precio * item.quantity : 0),
     0,
   );
-  const cuponAplicable = usarCupon && cuponesDisponibles.length > 0 && tieneProductosFisicos;
+  const cuponAplicable = usarCupon && totalCuponesDisponibles > 0 && tieneProductosFisicos;
   const descuentoCupon = cuponAplicable ? Math.min(descuentoCuponDigital, subtotalFisico) : 0;
   const maxPuntosCanjeables = Math.min(puntosDisponibles, subtotalBruto - descuentoCupon);
   const descuentoPuntos = Math.min(puntosAplicar, maxPuntosCanjeables);
@@ -139,6 +148,16 @@ export const Carritos = ({
       })
       .catch(err => {
         console.warn('No se pudo sincronizar el saldo de puntos en el carrito:', err);
+      });
+
+    listarDescuentosPorPersonaApi(personaId)
+      .then(lista => {
+        if (cancelado) return;
+        const activos = lista.filter(d => d.activo && d.tipoDescuento === 'DIGITAL_A_FISICO');
+        setDescuentosBackend(activos);
+      })
+      .catch(err => {
+        console.warn('No se pudieron cargar los descuentos activos desde descuentos-service:', err);
       });
 
     return () => {
@@ -254,6 +273,56 @@ export const Carritos = ({
         }
       }
 
+      let descuentosRestantesBackend = [...descuentosBackend];
+      if (cuponAplicable) {
+        const descuentoActivo = descuentosRestantesBackend[0];
+        if (descuentoActivo) {
+          try {
+            await desactivarDescuentoApi(descuentoActivo.id);
+            descuentosRestantesBackend = descuentosRestantesBackend.slice(1);
+          } catch (err) {
+            console.warn('No se pudo desactivar el descuento en descuentos-service:', err);
+          }
+        } else {
+          const primerFisico = itemsConMangaId.find(
+            entry => entry.item.formato.toLocaleLowerCase('es') !== 'digital',
+          );
+          if (primerFisico?.mangaId) {
+            try {
+              const registrado = await calcularDescuentoApi({
+                personaId,
+                mangaId: primerFisico.mangaId,
+                precioOriginal: Math.max(1, primerFisico.item.precio),
+                tipoDescuento: 'DIGITAL_A_FISICO',
+              });
+              await desactivarDescuentoApi(registrado.id);
+            } catch (err) {
+              console.warn('No se pudo registrar el consumo del cupón en descuentos-service:', err);
+            }
+          }
+        }
+      }
+
+      const nuevosDescuentosGenerados: DescuentoResponse[] = [];
+      for (const { item, mangaId } of itemsConMangaId) {
+        if (item.formato.toLocaleLowerCase('es') === 'digital' && mangaId) {
+          for (let q = 0; q < item.quantity; q += 1) {
+            try {
+              const creadoDesc = await calcularDescuentoApi({
+                personaId,
+                mangaId,
+                precioOriginal: Math.max(1, item.precio),
+                tipoDescuento: 'DIGITAL_A_FISICO',
+              });
+              nuevosDescuentosGenerados.push(creadoDesc);
+            } catch (err) {
+              console.warn('No se pudo registrar el descuento DIGITAL_A_FISICO en descuentos-service:', err);
+            }
+          }
+        }
+      }
+      setDescuentosBackend([...descuentosRestantesBackend, ...nuevosDescuentosGenerados]);
+
       const puntosGanados = puntosGanadosReales;
       const nuevosPuntos = saldoActualBackend;
       const primerPedidoId = pedidosCreados[0]?.id;
@@ -261,7 +330,9 @@ export const Carritos = ({
         ? `MF-${String(primerPedidoId).padStart(5, '0')}`
         : `MF-${String((sesion.compras?.length ?? 0) + 1).padStart(5, '0')}`;
       const fecha = new Date().toISOString();
-      const codigoCuponAplicado = cuponAplicable ? cuponesDisponibles[0] : undefined;
+      const codigoCuponAplicado = cuponAplicable
+        ? (cuponesLocales[0] ?? (descuentosBackend[0] ? `MF-DESC-${descuentosBackend[0].id}` : undefined))
+        : undefined;
       const cantidadCuponesGanados = items
         .filter(item => item.formato.toLocaleLowerCase('es') === 'digital')
         .reduce((total, item) => total + item.quantity, 0);
@@ -300,18 +371,22 @@ export const Carritos = ({
       const direccionEntrega = tipoEntregaFinal === 'despacho'
         ? `${direccion.trim()}, ${comuna.trim()}`
         : tipoEntregaFinal === 'retiro'
-          ? 'Retiro en tienda MangaFlow'
+          ? `Retiro en tienda — ${DIRECCION_TIENDA_EUROCENTRO}`
           : 'Entrega digital en Mi Biblioteca';
+
+      const cuponesActualizados = cuponAplicable
+        ? [
+            ...(cuponesLocales.length > 0 ? cuponesLocales.slice(1) : []),
+            ...nuevosCupones,
+          ]
+        : [...cuponesLocales, ...nuevosCupones];
 
       alActualizarSesion({
         ...sesion,
         puntos: nuevosPuntos,
         points: nuevosPuntos,
         biblioteca: bibliotecaActualizada,
-        cuponesFisicos: [
-          ...cuponesDisponibles.filter(codigo => codigo !== codigoCuponAplicado),
-          ...nuevosCupones,
-        ],
+        cuponesFisicos: cuponesActualizados,
         compras: [{
           id: folio,
           folio,
@@ -350,6 +425,7 @@ export const Carritos = ({
       setError('');
       alVaciar();
       setPuntosAplicar(0);
+      setUsarCupon(false);
     } catch (cause) {
       console.error('Error al registrar el pedido o pago en el servidor:', cause);
       const mensaje = cause instanceof Error
@@ -484,7 +560,7 @@ export const Carritos = ({
                 {tieneProductosFisicos && (
                   <fieldset className="checkout-section mb-3">
                     <legend className="text-white small fw-semibold mb-2">Cupón para manga físico</legend>
-                    {cuponesDisponibles.length > 0 ? (
+                    {totalCuponesDisponibles > 0 ? (
                       <label className="checkout-choice">
                         <input
                           type="checkbox"
@@ -493,7 +569,7 @@ export const Carritos = ({
                           aria-label="Usar cupón de descuento"
                         />
                         <span>
-                          Usar cupón de $2.300 ({cuponesDisponibles.length} disponible{cuponesDisponibles.length === 1 ? '' : 's'})
+                          Usar cupón de $2.300 ({totalCuponesDisponibles} disponible{totalCuponesDisponibles === 1 ? '' : 's'})
                         </span>
                       </label>
                     ) : (
@@ -561,7 +637,7 @@ export const Carritos = ({
                             checked={tipoEntrega === 'retiro'}
                             onChange={() => setTipoEntrega('retiro')}
                           />
-                          <span>Retiro en tienda</span>
+                          <span>Retiro en tienda (Eurocentro)</span>
                         </label>
                       </div>
                       {tipoEntrega === 'despacho' && (
@@ -665,7 +741,7 @@ export const Carritos = ({
                   <span className="col-5 text-secondary">Razón Social</span><strong className="col-7 text-end">MangaFlow SpA</strong>
                   <span className="col-5 text-secondary">RUT</span><span className="col-7 text-end">77.555.333-2</span>
                   <span className="col-5 text-secondary">Giro</span><span className="col-7 text-end">Comercio electrónico de libros y revistas</span>
-                  <span className="col-5 text-secondary">Casa Matriz</span><span className="col-7 text-end">Av. Los Leones 2450, Providencia, Santiago</span>
+                  <span className="col-5 text-secondary">Casa Matriz</span><span className="col-7 text-end">{DIRECCION_TIENDA_EUROCENTRO}</span>
                 </div>
               </div>
               <div className="mb-4">
@@ -716,7 +792,7 @@ export const Carritos = ({
                 <div className="receipt-payment p-3 rounded-3 d-flex justify-content-between gap-3 mb-3">
                   <span className="text-secondary small flex-shrink-0">Entrega</span>
                   <span className="fw-semibold text-white small text-end">
-                    {boleta.tipoEntrega === 'retiro' ? 'Retiro en tienda' : boleta.direccionEntrega}
+                    {boleta.direccionEntrega}
                   </span>
                 </div>
               )}
