@@ -9,6 +9,11 @@ import {
 import { PRECIO_MANGA_DIGITAL, type MangaCatalogo } from '../data/catalogo';
 import { puntosDeSesion, type LibroBiblioteca, type SesionUsuario } from '../data/sesion';
 import { crearPedidoApi } from '../services/pedidosService';
+import {
+  aprobarPagoApi,
+  crearPagoApi,
+  type MetodoPagoBackend,
+} from '../services/pagosService';
 
 const descuentoCuponDigital = PRECIO_MANGA_DIGITAL;
 const puntosPorCadaMilPesosFisicos = 10;
@@ -55,6 +60,13 @@ const obtenerPersonaIdDeSesion = (sesion: SesionUsuario | null): number | null =
     return Number(candidato.trim());
   }
   return null;
+};
+
+const mapMetodoPagoBackend = (medio: string): MetodoPagoBackend => {
+  if (medio === 'Transferencia') return 'TRANSFERENCIA';
+  if (medio === 'Efectivo al retirar') return 'EFECTIVO';
+  if (medio === 'Crédito') return 'WEBPAY';
+  return 'TARJETA';
 };
 
 export const Carritos = ({
@@ -167,6 +179,30 @@ export const Carritos = ({
         pedidosCreados.push(creado);
       }
 
+      if (totalConDescuento > 0 && subtotalBruto > 0) {
+        const metodoBackend = mapMetodoPagoBackend(medioPago);
+        let montoRestante = totalConDescuento;
+
+        for (let idx = 0; idx < pedidosCreados.length; idx += 1) {
+          const pedido = pedidosCreados[idx];
+          const esUltimo = idx === pedidosCreados.length - 1;
+          const montoProporcional = esUltimo
+            ? Math.max(1, montoRestante)
+            : Math.max(1, Math.round((pedido.total / subtotalBruto) * totalConDescuento));
+          montoRestante = Math.max(0, montoRestante - montoProporcional);
+
+          const pagoCreado = await crearPagoApi({
+            pedidoId: pedido.id,
+            monto: montoProporcional,
+            metodoPago: metodoBackend,
+          });
+
+          if (metodoBackend !== 'EFECTIVO') {
+            await aprobarPagoApi(pagoCreado.id);
+          }
+        }
+      }
+
       const puntosGanados = puntosGanables;
       const nuevosPuntos = Math.max(0, puntosDisponibles - descuentoPuntos + puntosGanados);
       const primerPedidoId = pedidosCreados[0]?.id;
@@ -264,10 +300,10 @@ export const Carritos = ({
       alVaciar();
       setPuntosAplicar(0);
     } catch (cause) {
-      console.error('Error al registrar el pedido en pedidos-service:', cause);
+      console.error('Error al registrar el pedido o pago en el servidor:', cause);
       const mensaje = cause instanceof Error
         ? cause.message
-        : 'No se pudo registrar el pedido en el servidor. Inténtalo nuevamente.';
+        : 'No se pudo registrar la compra en el servidor. Inténtalo nuevamente.';
       setError(mensaje);
     } finally {
       setProcesando(false);
@@ -540,10 +576,10 @@ export const Carritos = ({
 
                   <button className="btn-magenta w-100 py-3" type="submit" disabled={procesando}>
                     <i className="fa-solid fa-bag-shopping me-2" aria-hidden="true" />
-                    {procesando ? 'Registrando pedido...' : 'Confirmar compra'}
+                    {procesando ? 'Registrando pedido y pago...' : 'Confirmar compra'}
                   </button>
                   <p className="text-secondary text-center cart-simulation-note mt-3 mb-0">
-                    El pedido quedará guardado en la base de datos y la boleta en Mi cuenta.
+                    El pedido y el pago quedarán guardados en la base de datos y la boleta en Mi cuenta.
                   </p>
                 </form>
               </section>
